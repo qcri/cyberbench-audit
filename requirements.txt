@@ -1,0 +1,22 @@
+# Core ML/DL frameworks
+torch>=2.0.0
+transformers>=4.35.0
+peft>=0.7.0
+datasets>=2.14.0
+
+# Data science and metrics
+numpy>=1.24.0
+scikit-learn>=1.3.0
+
+# Utilities
+tqdm>=4.65.0
+requests>=2.31.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Optional: Fast inference (uncomment if using vLLM)
+# vllm>=0.2.0
+
+# Optional: Accelerated training
+# accelerate>=0.24.0
+# bitsandbytes>=0.41.0
