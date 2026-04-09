@@ -1,5 +1,8 @@
-# Paper directory
+# Irrelevant directory
 Paper/
+outputs_test*
+results_llm_judge_*
+cissp.json
 
 # Python
 *.py[cod]
