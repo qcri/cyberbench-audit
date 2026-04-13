@@ -24,7 +24,14 @@ from tqdm import tqdm
 load_dotenv()
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
+
+# Optional peft import for LoRA adapter support
+try:
+    from peft import PeftModel
+    HAS_PEFT = True
+except ImportError:
+    HAS_PEFT = False
+
 import numpy as np
 from sklearn.metrics import f1_score, accuracy_score
 from collections import Counter
@@ -74,6 +81,11 @@ def load_model_and_tokenizer(model_path: str, base_model: str = None, is_base: b
         print("Loading LoRA adapters...")
         if not base_model:
             raise ValueError("base_model must be specified when loading LoRA adapters")
+        if not HAS_PEFT:
+            raise ImportError(
+                "PEFT library not found but LoRA adapter detected. "
+                "Install peft with: pip install peft"
+            )
         base = AutoModelForCausalLM.from_pretrained(
             base_model,
             torch_dtype=torch.bfloat16,

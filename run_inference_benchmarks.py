@@ -23,7 +23,14 @@ import argparse
 from tqdm import tqdm
 from datasets import load_dataset, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
+
+# Optional peft import for LoRA adapter support
+try:
+    from peft import PeftModel
+    HAS_PEFT = True
+except ImportError:
+    HAS_PEFT = False
+
 from datetime import datetime
 
 # Optional vLLM import for fast batched inference
@@ -32,6 +39,43 @@ try:
     HAS_VLLM = True
 except ImportError:
     HAS_VLLM = False
+
+
+def get_task_type(task_name: str) -> str:
+    """Map task name to evaluation type for LLM judge.
+    
+    This centralizes the task type mapping so the judge can read it from
+    response metadata without hard-coding every benchmark name.
+    """
+    task_type_map = {
+        # MCQ-style tasks (single choice A/B/C/D)
+        "mcq": "mcq",
+        "cybermetric": "mcq",
+        "cissp": "mcq",
+        "mmlu-cs": "mcq",
+        "secbench": "mcq",
+        "ckt": "ckt",  # 5-option MCQ (A/B/C/D/E)
+        "secure_maet": "secure",
+        "secure_cwet": "secure",
+        "secure_kcv": "secure",
+        "redsage_frameworks": "mcq",
+        "redsage_generals": "mcq",
+        "redsage_skills": "mcq",
+        "redsage_cli": "mcq",
+        "redsage_kali": "mcq",
+        
+        # Multi-select MCQ
+        "seceval": "seceval",
+        
+        # Structured extraction tasks
+        "rcm": "rcm",  # CWE ID extraction
+        "vsp": "vsp",  # CVSS vector extraction
+        "ate": "ate",  # MITRE ATT&CK techniques
+        "rms": "rms",  # Risk mitigation strategies
+        "taa": "taa",  # Threat actor attribution (AthenaBench)
+        "cti_taa": "taa",  # Threat actor attribution (CTI-Bench)
+    }
+    return task_type_map.get(task_name, "mcq")  # Default to MCQ
 
 
 def load_model_and_tokenizer(model_path: str, base_model: str = None, is_base: bool = False):
@@ -62,6 +106,11 @@ def load_model_and_tokenizer(model_path: str, base_model: str = None, is_base: b
         )
     elif os.path.exists(os.path.join(model_path, "adapter_config.json")):
         print("Loading LoRA adapters...")
+        if not HAS_PEFT:
+            raise ImportError(
+                "PEFT library not found but LoRA adapter detected. "
+                "Install peft with: pip install peft"
+            )
         if not base_model:
             raise ValueError("base_model must be specified when loading LoRA adapters")
         base = AutoModelForCausalLM.from_pretrained(
@@ -325,7 +374,8 @@ def collect_huggingface_benchmark(task_name: str, dataset_name: str, subset_name
         metadata = {
             "dataset": dataset_name,
             "subset": subset_name,
-            "sample_id": idx
+            "sample_id": idx,
+            "task_type": get_task_type(task_name)  # Add task type for judge
         }
         
         # Add choices if available
@@ -389,7 +439,8 @@ def collect_athenabench_jsonl(task_name: str, jsonl_url: str,
         # Prepare metadata with options if available (for CKT)
         metadata = {
             "source": jsonl_url,
-            "sample_id": idx
+            "sample_id": idx,
+            "task_type": get_task_type(task_name)  # Add task type for judge
         }
         
         # Add options for CKT (5-option MCQ)
@@ -499,6 +550,7 @@ def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
                 "question": q['question'],
                 "choices": choices,
                 "id": q.get('id', ''),
+                "task_type": "seceval",  # Multi-select MCQ
                 "source": q.get('source', ''),
                 "topics": q.get('topics', []),
                 "keyword": q.get('keyword', '')
@@ -607,7 +659,8 @@ def collect_cissp(model, tokenizer, output_file: str, dataset_path: str = None,
             "metadata": {
                 "question": question,
                 "choices": choices,
-                "domain": q.get('domain', '')
+                "domain": q.get('domain', ''),
+                "task_type": "mcq"  # Single-choice MCQ
             }
         }
         results.append(result)
@@ -645,7 +698,7 @@ def main():
     
     # Collection options
     parser.add_argument("--tasks", nargs="+", default=["mcq", "rcm", "vsp", "ate"], 
-                       help="Tasks to collect: mcq, rcm, vsp, ate, ckt, rms, taa, mmlu-cs, secure_maet, secure_cwet, secure_kcv, secbench, redsage_frameworks, redsage_generals, redsage_skills, redsage_cli, redsage_kali, cybermetric, seceval, cissp")
+                       help="Tasks to collect: mcq, rcm, vsp, ate, cti_taa, ckt, rms, taa, mmlu-cs, secure_maet, secure_cwet, secure_kcv, secbench, redsage_frameworks, redsage_generals, redsage_skills, redsage_cli, redsage_kali, cybermetric, seceval, cissp. Note: cti_taa is CTI-Bench TAA (50 items), taa is AthenaBench TAA (100 items)")
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory for JSONL files")
     parser.add_argument("--max_samples", type=int, default=None, help="Limit samples per task (for testing)")
     
@@ -732,6 +785,7 @@ def main():
         "rcm": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-rcm"),
         "vsp": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-vsp"),
         "ate": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-ate"),
+        "cti_taa": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-taa"),  # Original TAA: 50 items
         
         # Other HuggingFace benchmarks
         "mmlu-cs": ("hf", "lighteval/mmlu", "computer_security"),
@@ -748,7 +802,7 @@ def main():
         "redsage_cli": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_tools_cli"),
         "redsage_kali": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_tools_kali"),
         
-        # AthenaBench GitHub JSONL tasks
+        # AthenaBench GitHub JSONL tasks (AthenaBench TAA is expanded version: 100 items)
         "ckt": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-ckt-3k.jsonl", None),
         "rms": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-rms.jsonl", None),
         "taa": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-taa.jsonl", None),
