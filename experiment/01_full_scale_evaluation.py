@@ -219,45 +219,73 @@ def run_evaluation_for_model(model_config: ModelConfig, subset: bool = False) ->
 
 
 def parse_evaluation_results(model_name: str, results_file: str) -> List[EvaluationResult]:
-    """Parse evaluation JSON and compute confidence intervals"""
+    """Parse evaluation JSON and compute confidence intervals
+    
+    Note: run_evaluate_llm_judge.py writes to {output}_detailed/results.json,
+    not to the output path directly
+    """
     results = []
+    
+    # Judge script creates a _detailed directory and writes results.json there
+    detailed_dir = results_file.replace('.json', '_detailed')
+    actual_results_file = Path(detailed_dir) / "results.json"
 
     try:
-        with open(results_file, 'r') as f:
+        if not actual_results_file.exists():
+            logger.warning(f"Results file not found: {actual_results_file}")
+            return results
+            
+        with open(actual_results_file, 'r') as f:
             data = json.load(f)
 
-        # Iterate through all task results
-        for task_name, task_results in data.items():
-            if isinstance(task_results, dict) and 'accuracy_scores' in task_results:
-                scores = task_results['accuracy_scores']
-                if isinstance(scores, list) and len(scores) > 0:
-                    # Compute statistics
-                    scores_arr = np.array(scores)
-                    mean_acc = float(np.mean(scores_arr))
-                    std_dev = float(np.std(scores_arr))
-
-                    # Compute 95% confidence interval
-                    ci_lower = float(np.percentile(scores_arr, 2.5))
-                    ci_upper = float(np.percentile(scores_arr, 97.5))
-
-                    # Extract benchmark from task metadata
-                    benchmark = task_results.get('benchmark', 'Unknown')
-
-                    result = EvaluationResult(
-                        model_name=model_name,
-                        task_name=task_name,
-                        benchmark=benchmark,
-                        accuracy=mean_acc,
-                        std_dev=std_dev,
-                        ci_lower=ci_lower,
-                        ci_upper=ci_upper,
-                        n_samples=len(scores),
-                        metadata=task_results.get('metadata', {})
-                    )
-                    results.append(result)
+        # Parse task results from judge output
+        # Judge writes: {"metadata": {...}, "results": {...}, "tasks": {task_name: {accuracy, correct, total}}}
+        tasks_data = data.get("tasks", {})
+        
+        for task_name, task_results in tasks_data.items():
+            if isinstance(task_results, dict) and 'accuracy' in task_results:
+                accuracy = task_results.get('accuracy', 0.0)
+                correct = task_results.get('correct', 0)
+                total = task_results.get('total', 0)
+                
+                # Try to infer benchmark from task name
+                benchmark = "Unknown"
+                if task_name in ['mcq', 'rcm', 'vsp', 'ate']:
+                    benchmark = "CTI-Bench"
+                elif task_name in ['cti_taa']:
+                    benchmark = "CTI-Bench"
+                elif task_name in ['ckt', 'rms', 'taa']:
+                    benchmark = "AthenaBench"
+                elif task_name.startswith('secure_'):
+                    benchmark = "SECURE"
+                elif task_name == 'seceval':
+                    benchmark = "SecEval"
+                elif task_name == 'cybermetric':
+                    benchmark = "CyberMetric"
+                elif task_name == 'cissp':
+                    benchmark = "CISSP"
+                elif task_name == 'mmlu-cs':
+                    benchmark = "MMLU-CS"
+                elif task_name == 'secbench':
+                    benchmark = "SecBench"
+                elif task_name.startswith('redsage_'):
+                    benchmark = "RedSage-Bench"
+                
+                result = EvaluationResult(
+                    model_name=model_name,
+                    task_name=task_name,
+                    benchmark=benchmark,
+                    accuracy=accuracy,
+                    std_dev=0.0,  # Judge doesn't provide std dev
+                    ci_lower=accuracy,  # Use accuracy as bounds for single run
+                    ci_upper=accuracy,
+                    n_samples=total,
+                    metadata=task_results
+                )
+                results.append(result)
 
     except Exception as e:
-        logger.error(f"Error parsing results from {results_file}: {e}")
+        logger.error(f"Error parsing results from {actual_results_file}: {e}")
 
     return results
 

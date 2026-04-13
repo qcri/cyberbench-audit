@@ -24,6 +24,7 @@ Output:
 """
 
 import json
+import csv
 import re
 import numpy as np
 from pathlib import Path
@@ -290,6 +291,13 @@ def main():
     with open(OUTPUT_DIR / "ate_protocol_analysis.json", 'w') as f:
         json.dump(result_data, f, indent=2)
     logger.info(f"✓ Analysis saved to {OUTPUT_DIR}/ate_protocol_analysis.json")
+
+    # Generate CSV with per-response comparison data
+    with open(OUTPUT_DIR / "ate_format_sensitivity.csv", 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=["model", "format", "f1_regex", "f1_normalized", "gap", "is_format_error"])
+        writer.writeheader()
+        writer.writerows(analysis["f1_comparison"])
+    logger.info(f"✓ CSV saved to {OUTPUT_DIR}/ate_format_sensitivity.csv")
 
     # Generate report
     generate_ate_report(responses, analysis, OUTPUT_DIR / "ate_format_sensitivity.md")

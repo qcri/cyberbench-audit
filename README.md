@@ -1,6 +1,6 @@
 # Benchmarking the Benchmarks: A Meta-Evaluation Framework for Cybersecurity LLMs
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 > **A systematic meta-evaluation of cybersecurity LLM benchmarks with unified evaluation harness and reproducible scoring protocols.**
@@ -68,7 +68,7 @@ Our framework assesses benchmarks across six dimensions:
 
 ### Requirements
 
-- Python ≥ 3.8
+- Python ≥ 3.10 (tested with 3.11)
 - CUDA-compatible GPU (for local inference)
 - 16GB+ VRAM recommended
 

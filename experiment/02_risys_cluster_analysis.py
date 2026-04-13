@@ -78,7 +78,7 @@ def extract_model_cluster_performance(
     results: Dict,
     model_name: str,
     clusters: List[BenchmarkCluster]
-) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
+) -> Dict[str, List[float]]:
     """Extract model accuracy scores by benchmark cluster"""
 
     cluster_scores = {}
@@ -257,8 +257,10 @@ def generate_markdown_report(
         comp = analysis["comparative_analysis"]
         report.append(f"- RedSage advantage on RISys benchmarks: {comp['redsage_vs_primus_on_risys']:+.3f}")
         report.append(f"- RedSage advantage on independent benchmarks: {comp['redsage_vs_primus_on_independent']:+.3f}")
-        report.append(f"- Advantage concentration on RISys: {comp['risys_specific']}")
-        report.append(f"- Interpretation: {comp['interpretation']}")
+        if "advantage_concentration" in comp:
+            adv_conc = comp["advantage_concentration"]
+            report.append(f"- Advantage concentration on RISys: {adv_conc['risys_specific']}")
+            report.append(f"- Interpretation: {adv_conc['interpretation']}")
     report.append("")
 
     report.append("## Interpretation")

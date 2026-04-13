@@ -74,14 +74,20 @@ def run_evaluation_with_backend(
 
     logger.info(f"Running {task_name} with {backend_type} backend (run {run_id})...")
 
+    # Construct command for judge evaluation
+    # Note: Assumes response files already exist from inference phase
+    # Judge backend is controlled by --judge_use_vllm (vLLM) or default (HuggingFace)
     cmd = [
         "python",
         "../run_evaluate_llm_judge.py",
-        "--benchmark", benchmark_name,
-        "--task", task_name,
-        "--judge-backend", backend_type,
-        "--output", f"results/temp_{backend_type}_{task_name}_{run_id}.json"
+        "--response_dir", f"responses/{benchmark_name.lower()}",
+        "--tasks", task_name,
+        "--output", f"results/temp_{backend_type}_{task_name}_{run_id}"
     ]
+
+    # Add backend-specific flag
+    if backend_type == "vllm":
+        cmd.append("--judge_use_vllm")
 
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -110,7 +116,7 @@ def run_evaluation_with_backend(
                 return backend_result
         else:
             logger.warning(f"No result file for {backend_type}/{task_name}")
-            return BackendResult(background_name=backend_type, task_name=task_name, accuracy=0.0, n_samples=0)
+            return BackendResult(backend_name=backend_type, task_name=task_name, accuracy=0.0, n_samples=0)
 
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ Backend evaluation failed: {e}")
@@ -318,12 +324,14 @@ def main():
     logger.info("=" * 70)
 
     # Test tasks (subset for demonstration)
+    # Format: (benchmark_name, task_name)
+    # Task names must match actual benchmark task IDs from run_inference_benchmarks.py
     TEST_TASKS = [
-        ("CTI-Bench", "TAA"),
-        ("CTI-Bench", "RMS"),
-        ("SecEval", "MSQ"),
-        ("AthenaBench", "RMS"),
-        ("CyberMetric", "MCQ"),
+        ("CTI-Bench", "cti_taa"),  # CTI-Bench TAA (50 items)
+        ("CTI-Bench", "mcq"),      # CTI-Bench MCQ
+        ("AthenaBench", "rms"),    # AthenaBench RMS
+        ("SecEval", "seceval"),    # SecEval (single task)
+        ("CyberMetric", "cybermetric"),  # CyberMetric (single task)
     ]
 
     hf_results = []

@@ -134,6 +134,8 @@ def create_heatmap(output_file: str, format: str = "png") -> None:
 def create_scatter_plot(output_file: str = "framework_scatter.png") -> None:
     """Create scatter plot: # items vs validation provenance"""
 
+    benchmark_list = [b.replace("*", "") for b in BENCHMARKS]
+
     # Items per benchmark (approximate from paper)
     items = {
         "SecEval": 2189,
@@ -179,6 +181,8 @@ def create_scatter_plot(output_file: str = "framework_scatter.png") -> None:
 
 def create_dimension_summary_bar(output_file: str = "framework_dimensions.png") -> None:
     """Create bar chart showing dimension-wise coverage"""
+
+    benchmark_list = [b.replace("*", "") for b in BENCHMARKS]
 
     # Count H/M/L/N for each dimension
     all_scores = np.array([SCORES[b] for b in benchmark_list])
@@ -279,6 +283,8 @@ def create_html_interactive(output_file: str = "framework_interactive.html") -> 
 
 def create_summary_json(output_file: str = "framework_summary.json") -> None:
     """Save framework data as structured JSON"""
+
+    benchmark_list = [b.replace("*", "") for b in BENCHMARKS]
 
     summary = {
         "metadata": {

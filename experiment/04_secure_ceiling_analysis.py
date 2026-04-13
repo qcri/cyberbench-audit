@@ -111,33 +111,42 @@ def run_model_evaluation(
     for task in SECURE_TASKS:
         logger.info(f"Evaluating {model_name} on SECURE/{task}...")
 
+        # Sanitize model name for file paths (replace "/" with "_")
+        safe_model_name = model_name.replace("/", "_")
+
         cmd = [
             "python",
             "../run_evaluate_llm_judge.py",
-            "--model", model_name,
-            "--benchmark", "SECURE",
-            "--task", task,
-            "--num-samples", "50",  # Reasonable sample size for ceiling detection
-            "--judge-backend", "huggingface",
-            "--output", f"results/temp_{model_name}_{task}.json"
+            "--model_path", model_name,
+            "--tasks", task,
+            "--max_samples", "50",  # Reasonable sample size for ceiling detection
+            "--output", f"results/temp_{safe_model_name}_{task}"
         ]
 
         if is_base:
-            cmd.append("--is-base")
+            cmd.append("--is_base")
 
         try:
             subprocess.run(cmd, check=True, capture_output=True)
 
-            # Parse result
-            result_file = f"results/temp_{model_name}_{task}.json"
-            if Path(result_file).exists():
+            # Parse result - judge outputs to {output}_detailed/results.json
+            detailed_dir = f"results/temp_{safe_model_name}_{task}_detailed"
+            result_file = Path(detailed_dir) / "results.json"
+            if result_file.exists():
                 with open(result_file, 'r') as f:
                     data = json.load(f)
-                    accuracy = data.get("accuracy", 0.0)
-                    results[task] = accuracy
+                    # Judge output format: {"tasks": {task_name: {accuracy, correct, total}}}
+                    tasks_data = data.get("tasks", {})
+                    if task in tasks_data:
+                        accuracy = tasks_data[task].get("accuracy", 0.0)
+                        results[task] = accuracy
+                    else:
+                        logger.warning(f"Task {task} not found in results for {model_name}")
+                        results[task] = None
 
-                    # Clean up temp file
-                    Path(result_file).unlink()
+                # Clean up temp directory
+                import shutil
+                shutil.rmtree(detailed_dir, ignore_errors=True)
             else:
                 logger.warning(f"No result file for {model_name}/{task}")
                 results[task] = None

@@ -23,7 +23,14 @@ import argparse
 from tqdm import tqdm
 from datasets import load_dataset, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
+
+# Optional peft import for LoRA adapter support
+try:
+    from peft import PeftModel
+    HAS_PEFT = True
+except ImportError:
+    HAS_PEFT = False
+
 from datetime import datetime
 
 # Optional vLLM import for fast batched inference
@@ -99,6 +106,11 @@ def load_model_and_tokenizer(model_path: str, base_model: str = None, is_base: b
         )
     elif os.path.exists(os.path.join(model_path, "adapter_config.json")):
         print("Loading LoRA adapters...")
+        if not HAS_PEFT:
+            raise ImportError(
+                "PEFT library not found but LoRA adapter detected. "
+                "Install peft with: pip install peft"
+            )
         if not base_model:
             raise ValueError("base_model must be specified when loading LoRA adapters")
         base = AutoModelForCausalLM.from_pretrained(

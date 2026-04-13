@@ -57,11 +57,14 @@ def run_script(script_name: str, options: dict) -> bool:
 
     cmd = [sys.executable, str(script_path)]
 
-    # Add options from command line
-    if options.get("subset"):
-        cmd.append("--subset")
-    if options.get("no_plots"):
-        cmd.append("--no-plots")
+    # Only pass flags to scripts that support them
+    # Script 01 supports --subset, scripts 06-07 support --no-plots
+    if script_name == "01_full_scale_evaluation.py":
+        if options.get("subset"):
+            cmd.append("--subset")
+    elif script_name in ["06_generate_framework_visualizations.py", "07_generate_reports.py"]:
+        if options.get("no_plots"):
+            cmd.append("--no-plots")
 
     logger.info(f"\n{'='*70}")
     logger.info(f"Running: {script_name}")

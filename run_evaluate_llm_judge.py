@@ -22,7 +22,6 @@ from typing import Dict, Any, List
 from tqdm import tqdm
 from datasets import load_dataset, Dataset as HFDataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
 
 # Optional vLLM import for fast batched judge inference
 try:
