@@ -1,6 +1,5 @@
 # Benchmarking the Benchmarks: A Meta-Evaluation Framework for Cybersecurity LLMs
 
-[![NeurIPS 2026](https://img.shields.io/badge/NeurIPS-2026-blue)](Paper/neurips_2026.pdf)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -39,7 +38,7 @@ Our framework assesses benchmarks across six dimensions:
 
 ## Supported Benchmarks
 
-### Knowledge Benchmarks (20 Tasks)
+### Knowledge Benchmarks (21 Tasks)
 
 #### CTI-Bench (RISys-Lab)
 - **MCQ**: Multiple-choice cybersecurity knowledge
@@ -92,7 +91,7 @@ pip install vllm
 Core packages:
 - `torch>=2.0.0` - PyTorch deep learning framework
 - `transformers>=4.35.0` - HuggingFace model library
-- `peft>=0.7.0` - Parameter-efficient fine-tuning (LoRA)
+- `peft>=0.7.0` - Parameter-efficient fine-tuning (optional)
 - `datasets>=2.14.0` - HuggingFace datasets
 - `numpy`, `scikit-learn` - Metrics and evaluation
 - `tqdm`, `requests`, `pyyaml`, `python-dotenv` - Utilities
@@ -120,7 +119,7 @@ python run_inference_benchmarks.py \
 - `redsage_frameworks`, `redsage_generals`, `redsage_skills`, `redsage_cli`, `redsage_kali`
 
 **Optional arguments:**
-- `--base_model`: Base model name (required for LoRA adapters)
+- `--base_model`: Base model name (optional for some models)
 - `--is_base`: Load as base model without adapters
 - `--use_vllm`: Use vLLM for fast batched inference
 - `--vllm_gpu_memory_utilization`: GPU memory utilization (default: 0.9)
@@ -199,25 +198,55 @@ BenchmarkingSecBenchmarks/
 ├── run_evaluate_llm_judge.py        # LLM-judge evaluation (recommended)
 ├── requirements.txt                 # Python dependencies
 ├── .gitignore                       # Git ignore patterns
-└── outputs/                         # Saved model responses (JSONL)
+├── outputs/                         # Saved model responses (JSONL)
+└── experiment/                      # Paper experiments & analysis
+    ├── run_all_experiments.py       # Master orchestrator (runs all 7 scripts)
+    ├── 01_full_scale_evaluation.py  # Main evaluation (7 models × 21 tasks)
+    ├── 02_risys_cluster_analysis.py # Circular evaluation analysis
+    ├── 03_ate_protocol_analysis.py  # ATE format sensitivity bug
+    ├── 04_secure_ceiling_analysis.py # SECURE ceiling effects
+    ├── 05_backend_variance_analysis.py # HF vs vLLM comparison
+    ├── 06_generate_framework_visualizations.py # Create plots
+    ├── 07_generate_reports.py       # Practitioner guides
+    └── README.md                     # Detailed experiment documentation
 ```
+
+## Running Paper Experiments
+
+For reproducing paper results (Section 5 - Empirical Evaluation):
+
+```bash
+cd experiment/
+
+# Quick validation with small subset (1-2 hours)
+python run_all_experiments.py --subset
+
+# Full-scale evaluation (5-9 hours, 7 models × 21 tasks)
+python run_all_experiments.py
+```
+
+This runs all 7 experiment scripts and generates:
+- Full evaluation results with confidence intervals
+- Gap analysis evidence (circular eval, protocol bugs, ceiling effects)
+- Framework visualizations (heatmaps, scatter plots)
+- Practitioner guides and recommendations
+
+See [experiment/README.md](experiment/README.md) for detailed documentation.
 
 ## Evaluated Models
 
-### Security-Specialized LLMs
-- **PRIMUS** (TrendMicro AI Lab): 23K reasoning samples
-- **RedSage** (RISys-Lab): Benchmarked on own datasets
-- **Foundation-Sec-8B**: Security-focused foundation model
+### Base Model
+- **Llama-3.1-8B-Instruct**: General-purpose instruction-tuned model
 
-### Fine-tuned Variants
-- Llama-3.1-8B-Instruct + LoRA (Primus dataset)
-- Gemma-2-9B-it + LoRA (Primus dataset)
-- Qwen-2.5-7B-Instruct + LoRA (Primus dataset)
+### Security-Specialized LLMs
+- **Llama-Primus-Merged** (TrendMicro): CPT with 2.75B security tokens + 835 reasoning samples
+- **Llama-Primus-Base** (TrendMicro): CPT with 2.75B security tokens
+- **Foundation-Sec-8B-Instruct**: CPT with 5.1B security tokens + 28K SFT samples
+- **RedSage-8B-Ins** (RISys-Lab): CPT with 11.8B security tokens + 266K SFT samples
+- **RedSage-8B-DPO** (RISys-Lab): RedSage-Ins + DPO alignment
 
 ### Multilingual
-- **QCRI/Fanar-1-9B-Instruct**: Arabic-capable model
-
-**Fine-tuning setup:** LoRA (rank=8, α=16, dropout=0.1), 3 epochs, lr=1e-6, cosine scheduling, bfloat16
+- **QCRI/Fanar-1-9B-Instruct**: Arabic-capable model for multilingual evaluation
 
 ## Evaluation Protocol Recommendations
 

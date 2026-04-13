@@ -52,6 +52,21 @@ checkpoints/
 results/
 logs/
 
+# Experiment results and logs
+experiment/nohup*.out
+experiment/results/
+experiment/results_*/
+experiment/*.log
+experiment/*.csv
+
+# Evaluation output files
+*_responses.jsonl
+*_evaluations.jsonl
+*_detailed.jsonl
+evaluations_*.json
+full_scale_results.json
+model_comparison_table.csv
+
 # Model files
 *.bin
 *.safetensors

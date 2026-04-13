@@ -1292,6 +1292,7 @@ def main():
         "rcm": ("RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-rcm"),
         "vsp": ("RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-vsp"),
         "ate": ("RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-ate"),
+        "cti_taa": ("RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-taa"),  # Original TAA: 50 items
         
         # Other HuggingFace benchmarks
         "mmlu-cs": ("lighteval/mmlu", "computer_security"),
@@ -1316,25 +1317,6 @@ def main():
     
     for task_name in tasks_to_eval:
         task_lower = task_name.lower()
-        
-        # Map task names to judge task types
-        # SECURE tasks (MAET, CWET, KCV), SecBench, and RedSageMCQ all use MCQ format
-        judge_task_type_map = {
-            "secure_maet": "secure",
-            "secure_cwet": "secure",
-            "secure_kcv": "secure",
-            "secbench": "secbench",
-            "mmlu-cs": "mmlu_cs",
-            "ckt": "ckt",  # AthenaBench's enhanced MCQ with 5 options
-            "rms": "rms",  # Risk Mitigation Strategies
-            "taa": "taa",  # Threat Actor Attribution
-            "redsage_frameworks": "mcq",
-            "redsage_generals": "mcq",
-            "redsage_skills": "mcq",
-            "redsage_cli": "mcq",
-            "redsage_kali": "mcq",
-        }
-        judge_task_type = judge_task_type_map.get(task_lower, task_lower)
         
         print(f"\n{'='*70}")
         print(f"Evaluating {task_lower.upper()}")
@@ -1369,6 +1351,32 @@ def main():
             
             print(f"Loaded {len(responses)} responses")
             
+            # Determine task type from metadata (generic approach)
+            # Read task_type from first response's metadata if available
+            if responses and 'metadata' in responses[0] and 'task_type' in responses[0]['metadata']:
+                judge_task_type = responses[0]['metadata']['task_type']
+                print(f"Task type from metadata: {judge_task_type}")
+            else:
+                # Fallback to hard-coded mapping for backward compatibility
+                judge_task_type_map = {
+                    "secure_maet": "secure",
+                    "secure_cwet": "secure",
+                    "secure_kcv": "secure",
+                    "secbench": "secbench",
+                    "mmlu-cs": "mmlu_cs",
+                    "ckt": "ckt",
+                    "rms": "rms",
+                    "taa": "taa",
+                    "cti_taa": "taa",
+                    "redsage_frameworks": "mcq",
+                    "redsage_generals": "mcq",
+                    "redsage_skills": "mcq",
+                    "redsage_cli": "mcq",
+                    "redsage_kali": "mcq",
+                }
+                judge_task_type = judge_task_type_map.get(task_lower, task_lower)
+                print(f"Task type from fallback mapping: {judge_task_type}")
+            
             # Convert to dataset-like format
             dataset_dict = {
                 'Prompt': [r.get('prompt', r.get('question', '')) for r in responses],
@@ -1389,6 +1397,25 @@ def main():
         elif task_lower in task_datasets:
             # Load dataset and run inference
             dataset_name, subset_name = task_datasets[task_lower]
+            
+            # Determine task type from task name (for dataset mode only)
+            judge_task_type_map = {
+                "secure_maet": "secure",
+                "secure_cwet": "secure",
+                "secure_kcv": "secure",
+                "secbench": "secbench",
+                "mmlu-cs": "mmlu_cs",
+                "ckt": "ckt",
+                "rms": "rms",
+                "taa": "taa",
+                "cti_taa": "taa",
+                "redsage_frameworks": "mcq",
+                "redsage_generals": "mcq",
+                "redsage_skills": "mcq",
+                "redsage_cli": "mcq",
+                "redsage_kali": "mcq",
+            }
+            judge_task_type = judge_task_type_map.get(task_lower, task_lower)
             
             # Load dataset based on type
             if dataset_name == "jsonl":
