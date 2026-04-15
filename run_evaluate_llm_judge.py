@@ -323,9 +323,51 @@ Respond ONLY with a JSON object in this exact format:
 
 Your judgment:"""
 
+    # ============================================================
+    # SEvenLLM: Structured JSON Extraction Tasks
+    # Uses SEvenLLM's GPT-4 scoring approach: 1-5 scale
+    # Reference: https://github.com/CSJianYang/SEevenLLM/blob/main/code/score/get_score_gpt4_prompt.py
+    # ============================================================
+    elif task_type == "sevenllm":
+        return f"""As a knowledge analysis expert in the field of cybersecurity, please rate the following network security event Q&A results.
+
+The content of the network security incident is:
+{extra_context.get('input', question) if extra_context else question}
+
+The question raised regarding the content of this cybersecurity incident is:
+{question}
+
+The expected answer (ground truth) is:
+{ground_truth}
+
+The model's answer provided for this event's content and question is:
+{model_answer}
+
+Scoring method:
+Using a 5-point scoring system:
+- 1 point: very poor (completely wrong or irrelevant)
+- 2 points: slightly poor (major errors or missing key information)
+- 3 points: usable (partially correct but incomplete)
+- 4 points: good (mostly correct with minor issues)
+- 5 points: very good (accurate, complete, matches expected output)
+
+Scoring reference criteria:
+- Whether the answer is answered accurately as required by the question
+- Whether the format is regular and the language is coherent and readable
+- Whether the extracted information matches the expected output
+- Whether the overall content has information value in the field of network security
+
+Respond ONLY with a JSON object in this exact format:
+{{
+  "score": <1-5>,
+  "reason": "explanation of your score"
+}}
+
+Your evaluation:"""
+
     else:
         # mmlu_cs is handled by the mcq branch above (task_type in ["mcq", ..., "mmlu_cs", ...])
-        raise ValueError(f"Unknown task_type: {task_type}. Supported: mcq, rcm, vsp, ate, cybermetric, seceval, cissp, mmlu_cs, secure, secbench, ckt, rms, taa")
+        raise ValueError(f"Unknown task_type: {task_type}. Supported: mcq, rcm, vsp, ate, cybermetric, seceval, cissp, mmlu_cs, secure, secbench, ckt, rms, taa, sevenllm")
 
 
 def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
@@ -376,6 +418,25 @@ def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
         # For other tasks, extract verdict
         verdict = parsed.get("verdict", "").strip().upper()
         justification = parsed.get("justification", "No justification provided")
+        
+        # Handle sevenllm with SEvenLLM's 1-5 scoring scale
+        if task_type == "sevenllm":
+            score = parsed.get("score", 1)
+            # Normalize to 1-5 if somehow got float
+            if isinstance(score, float) and score <= 1.0:
+                score = int(score * 5)
+            score = max(1, min(5, int(score)))  # Clamp to 1-5
+            reason = parsed.get("reason", "No reason provided")
+            # Consider score >= 4 as "correct" for accuracy metrics
+            is_correct = score >= 4
+            return {
+                "is_correct": is_correct,
+                "score": score,
+                "reason": reason,
+                "judge_response": judge_response,
+                "justification": reason
+            }
+        
         is_correct = verdict == "CORRECT"
         
         return {
@@ -403,6 +464,26 @@ def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
                 "extracted_vector": "",
                 "extraction_success": False,
                 "judge_response": judge_response
+            }
+        
+        # For sevenllm, fallback to extracting score from text
+        if task_type == "sevenllm":
+            # Try to find a number 1-5 in the response
+            score_match = re.search(r'["\']?score["\']?\s*[:=]\s*(\d)', judge_response)
+            if score_match:
+                score = int(score_match.group(1))
+            else:
+                # Fallback: look for any digit 1-5
+                digits = re.findall(r'\b([1-5])\b', judge_response)
+                score = int(digits[0]) if digits else 3  # Default to 3 (usable)
+            score = max(1, min(5, score))
+            is_correct = score >= 4
+            return {
+                "is_correct": is_correct,
+                "score": score,
+                "reason": "Fallback parsing - JSON parse failed",
+                "judge_response": judge_response,
+                "justification": "Fallback parsing - JSON parse failed"
             }
         
         # For other tasks, fallback to text matching
@@ -746,6 +827,9 @@ def evaluate_with_judge(model, tokenizer, dataset, task_type: str,
                         "judge_justification": judge_result.get('justification', ''),
                         "is_correct": is_correct
                     }
+                    # Add score for sevenllm (1-5 scale)
+                    if 'score' in judge_result:
+                        result['score'] = judge_result['score']
                     detailed_results.append(result)
     
     # Calculate metrics based on task type
@@ -852,6 +936,10 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
             elif isinstance(choices, list):
                 extra_context['choices'] = choices
         
+        # For SEvenLLM: pass input (cybersecurity incident content) for full context
+        if 'input' in metadata:
+            extra_context['input'] = metadata['input']
+        
         # Get judge's evaluation
         judge_result = judge_answer(
             judge_model, judge_tokenizer, task_type,
@@ -938,6 +1026,9 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
                         "judge_justification": judge_result.get('justification', ''),
                         "is_correct": is_correct
                     }
+                    # Add score for sevenllm (1-5 scale)
+                    if 'score' in judge_result:
+                        result['score'] = judge_result['score']
                     detailed_results.append(result)
     
     # Calculate metrics
