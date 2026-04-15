@@ -189,6 +189,45 @@ python run_inference_benchmarks.py \
   --benchmarks seceval
 ```
 
+### 5. Flag Incorrect Benchmark Answers
+
+After running LLM judge evaluation on multiple models, identify questions with potentially incorrect key answers using model agreement voting:
+
+```bash
+python flag_wrong_key_answers.py \
+  --detailed_results_dirs eval_llm_judge_model1_detailed eval_llm_judge_model2_detailed \
+  --agreement_threshold 0.5 \
+  --judge_model "meta-llama/Llama-3.1-8B-Instruct" \
+  --output flagged_questions_report.json
+```
+
+**With vLLM for faster inference:**
+```bash
+python flag_wrong_key_answers.py \
+  --detailed_results_dirs eval_llm_judge_model1_detailed eval_llm_judge_model2_detailed \
+  --agreement_threshold 0.5 \
+  --judge_model "meta-llama/Llama-3.1-8B-Instruct" \
+  --judge_use_vllm \
+  --judge_gpu_memory_utilization 0.8 \
+  --output flagged_questions_report.json
+```
+
+This script analyzes evaluation results from multiple models and flags questions where most models agree on an alternative answer to the benchmark's key answer. This helps identify potential errors in benchmark ground truth labels.
+
+**Voting Mechanism:**
+- If ≥ threshold fraction of models agree on answer x, but the key answer is y (x ≠ y), then the question is flagged as having a likely wrong key answer
+- For MCQ tasks: Uses exact matching after normalization
+- For open-ended tasks: Uses LLM judge for semantic comparison (required)
+
+**Arguments:**
+- `--detailed_results_dirs`: Directories containing *_detailed.jsonl files from run_evaluate_llm_judge.py
+- `--agreement_threshold`: Fraction of models that must agree on alternative answer (default: 0.5)
+- `--judge_model`: Judge model path for semantic comparison of open-ended answers (required if open-ended tasks are present)
+- `--judge_use_vllm`: Use vLLM for fast judge inference (requires vllm package)
+- `--judge_gpu_memory_utilization`: GPU memory fraction to use with vLLM judge (0.0-1.0, default: 0.9)
+- `--output`: Output JSON file with flagging report
+- `--update_jsonl`: Update original JSONL files with wrong_key_answer property
+
 ## Project Structure
 
 ```
@@ -196,6 +235,7 @@ BenchmarkingSecBenchmarks/
 ├── evaluate.py                      # Regex-based evaluation (baseline)
 ├── run_inference_benchmarks.py      # Collect model responses (JSONL)
 ├── run_evaluate_llm_judge.py        # LLM-judge evaluation (recommended)
+├── flag_wrong_key_answers.py        # Flag incorrect benchmark answers
 ├── requirements.txt                 # Python dependencies
 ├── .gitignore                       # Git ignore patterns
 ├── outputs/                         # Saved model responses (JSONL)
