@@ -9,7 +9,7 @@ Supported benchmarks:
 - SECURE: MAET, CWET, KCV
 - SecBench
 - RedSageMCQ: 5 subsets (Frameworks, Generals, Skills, CLI, Kali)
-- CyberMetric-500 (RISys-Lab)
+- CyberMetric-500
 - AthenaBench (GitHub JSONL): CKT, RMS, TAA
 - SecEval
 - CISSP
@@ -133,19 +133,21 @@ def load_model_and_tokenizer(model_path: str, base_model: str = None, is_base: b
     return model, tokenizer
 
 
-def chat_completion_api(endpoint: str, model_name: str, prompt: str,
+def chat_completion_api(endpoint: str, model_name: str, prompt: str = None,
                        api_key: str = "", max_tokens: int = 1024,
                        temperature: float = 0.0, retries: int = 3,
-                       system_prompt: str = None) -> str:
+                       system_prompt: str = None, messages: list = None) -> str:
     """Call OpenAI-compatible API endpoint"""
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+    if messages is None:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if prompt is not None:
+            messages.append({"role": "user", "content": prompt})
 
     payload = {
         "model": model_name,
@@ -168,10 +170,11 @@ def chat_completion_api(endpoint: str, model_name: str, prompt: str,
                 return f"ERROR: {str(e)}"
 
 
-def generate_response(model, tokenizer, prompt: str, max_new_tokens: int = 1024,
+def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int = 1024,
                      use_api: bool = False, use_vllm: bool = False, vllm_model=None,
                      api_endpoint: str = None, api_model: str = None, api_key: str = "",
-                     batch_size: int = None, system_prompt: str = None, **kwargs) -> str:
+                     batch_size: int = None, system_prompt: str = None,
+                     messages: list = None, **kwargs) -> str:
     """Generate response using local inference, vLLM, or API
 
     Args:
@@ -179,21 +182,24 @@ def generate_response(model, tokenizer, prompt: str, max_new_tokens: int = 1024,
         system_prompt: Optional system instruction for chat-style models
         **kwargs: Ignored additional parameters for compatibility
     """
+    if messages is None:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if prompt is not None:
+            messages.append({"role": "user", "content": prompt})
+
     if use_api:
         return chat_completion_api(
             api_endpoint,
             api_model,
-            prompt,
-            api_key,
-            max_new_tokens,
+            prompt=prompt,
+            api_key=api_key,
+            max_tokens=max_new_tokens,
             temperature=0.0,
             system_prompt=system_prompt,
+            messages=messages,
         )
-
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
 
     if use_vllm and vllm_model:
         formatted_prompt = tokenizer.apply_chat_template(
@@ -271,7 +277,7 @@ def initialize_vllm(model_path: str, base_model: str = None,
 
 def generate_responses_vllm(vllm_llm: "LLM", prompts: list, 
                            max_tokens: int = 1024,
-                           temperature: float = 0.1) -> list:
+                           temperature: float = 0.0) -> list:
     """Generate responses using vLLM batch inference
     
     Args:
@@ -506,17 +512,13 @@ def collect_athenabench_jsonl(task_name: str, jsonl_url: str,
     return len(results)
 
 
-
-
-
 def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
                    **api_kwargs):
-    """Collect responses from SecEval"""
+    """Collect responses from SecEval using chat-few-shot prompting"""
     print(f"\n{'='*70}")
     print(f"Collecting SecEval responses")
     print(f"{'='*70}")
 
-    # Load SecEval dataset
     dataset_url = "https://huggingface.co/datasets/XuanwuAI/SecEval/resolve/main/questions.json"
     response = requests.get(dataset_url, timeout=30)
     response.raise_for_status()
@@ -527,26 +529,20 @@ def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
 
     print(f"Total samples: {len(questions)}")
 
-    # Preserve original SecEval prompt
-    # Few-shot examples
     instruction = "Below are multiple-choice questions concerning cybersecurity. Please select the correct answers and respond with the letters ABCD only."
-    
-    few_shot = """
-    Question: You are reviewing a piece of code to identify potential vulnerabilities related to NULL pointer dereferences. Which of the following strategies should you consider implementing to mitigate the risk? Choose all that apply. A: Use a programming language that inherently manages pointers and prevents direct memory access. B: Apply input validation to all variables and data stores that receive data from external sources to ensure they are initialized to expected values. C: Explicitly initialize all variables and other data stores, either during declaration or just before the first usage. D: Implement a custom memory management system that automatically assigns a unique identifier to each pointer.
-    Answer: ABC 
-    Question: Analyze the code snippet provided. Which of the following practices should be implemented in a multithreaded application to prevent NULL pointer dereference vulnerabilities? Select all that apply.A: Ensure that proper locking APIs are used to lock the pointer before the if statement and unlock when it has finished to prevent race conditions. B: Check the return value of all functions that return a value, including network-related functions, and verify that it is non-null before using it.C: Use automated static analysis tools that target this type of weakness, understanding that while not perfect, they can still be effective.D: Verify that a non-nil 'response' is present before deferring 'response.Body.Close()' to handle cases where the 'Do' method returns an error.
-    Answer: ABCD 
-    Question: In a bank management application, a method called `createBankAccount` allows the creation of bank accounts without user identity verification or authority checks. Based on common security practices, which of the following measures would improve security?A: Implement a centralized authentication mechanism for operations that require a proven user identity.B: Duplicate client-side authentication checks on the server side to prevent bypassing of security checks.C: Use a vetted library or framework that offers robust authentication capabilities to prevent security weaknesses.D: Apply strong authentication requirements for all users accessing data stored in the cloud.
-    Answer: ABCD
-    Question: What are the potential consequences if an application handling sensitive data does not require authentication for data access, and what are the appropriate mitigation strategies?A: Attackers could easily access sensitive data from any location; require strong authentication for data access using cloud provider controls.B: Security checks might be bypassed if only performed on the client side; implement checks on both client and server sides.C: Unauthenticated users could alter product functionality; do not use authentication for critical functionality in products.D: Sensitive data may be accessed without proper credentials; utilize authentication capabilities provided by the framework or operating system.
-    Answer: ABD
-    Question: To prevent security vulnerabilities related to deserialization of untrusted data in a Java application, which of the following practices should a developer implement?A: Use the signing/sealing features of the programming language to assure that deserialized data has not been tainted.B: Explicitly define a final readObject() method to throw an exception and prevent deserialization.C: Populate a new object by deserializing data to ensure data flows through safe input validation functions.D: Make fields transient to protect them from deserialization and prevent carrying over sensitive variables.
-    Answer: ABCD
-    """
 
-    # Collect responses
+    chat_few_shot = [
+        {
+            "role": "user",
+            "content": "Question: Which mitigation prevent stack overflow bug? A: Stack Canary. B: ALSR. C: CFI. D: Code Signing."
+        },
+        {
+            "role": "assistant",
+            "content": "Answer: ABC",
+        },
+    ]
+
     results = []
-    total = len(questions)
     for idx, q in enumerate(tqdm(questions, desc="Collecting SecEval")):
         question = q.get("question", "")
         choices = q.get("choices", [])
@@ -554,15 +550,19 @@ def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
         if not question or not choices:
             continue
 
-        # Match original SecEval script
         question_text = "Question: " + question + " " + " ".join(choices)
         question_text = question_text.replace("\n", " ")
-        prompt = instruction + few_shot + question_text + "\n"
+
+        messages = (
+            [{"role": "system", "content": instruction}]
+            + chat_few_shot
+            + [{"role": "user", "content": question_text}]
+        )
 
         response = generate_response(
             model,
             tokenizer,
-            prompt,
+            messages=messages,
             max_new_tokens=1024,
             **api_kwargs,
         )
@@ -570,17 +570,18 @@ def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
         result = {
             "task": "seceval",
             "index": idx,
-            "prompt": prompt,
+            "prompt": messages,
             "ground_truth": q.get("answer", ""),
             "model_response": response,
             "metadata": {
                 "question": question,
                 "choices": choices,
                 "id": q.get("id", ""),
-                "task_type": "seceval",  # Multi-select MCQ
+                "task_type": "seceval",
                 "source": q.get("source", ""),
                 "topics": q.get("topics", []),
                 "keyword": q.get("keyword", ""),
+                "prompt_style": "chat_fewshot",
             },
         }
         results.append(result)
