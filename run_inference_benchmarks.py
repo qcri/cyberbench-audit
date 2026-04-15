@@ -343,7 +343,7 @@ def load_jsonl_dataset(source: str) -> Dataset:
 def collect_huggingface_benchmark(task_name: str, dataset_name: str, subset_name: str, 
                                   model, tokenizer, output_file: str, max_samples: int = None,
                                   **api_kwargs):
-    """Collect responses from HuggingFace datasets (CTI-Bench, MMLU-CS, SECURE, SecBench, CyberMetric, RedSageMCQ)"""
+    """Collect responses from HuggingFace datasets (CTI-Bench, MMLU-CS, SECURE, SecBench, RedSageMCQ)"""
     print(f"\n{'='*70}")
     print(f"Collecting {task_name.upper()} responses")
     print(f"Dataset: {dataset_name}/{subset_name}")
