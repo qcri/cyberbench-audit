@@ -9,7 +9,7 @@ Supported benchmarks:
 - SECURE: MAET, CWET, KCV
 - SecBench
 - RedSageMCQ: 5 subsets (Frameworks, Generals, Skills, CLI, Kali)
-- CyberMetric-500 (RISys-Lab)
+- CyberMetric-500
 - AthenaBench (GitHub JSONL): CKT, RMS, TAA
 - SecEval
 - CISSP
@@ -133,17 +133,25 @@ def load_model_and_tokenizer(model_path: str, base_model: str = None, is_base: b
     return model, tokenizer
 
 
-def chat_completion_api(endpoint: str, model_name: str, prompt: str, 
-                       api_key: str = "", max_tokens: int = 1024, 
-                       temperature: float = 0.1, retries: int = 3) -> str:
+def chat_completion_api(endpoint: str, model_name: str, prompt: str = None,
+                       api_key: str = "", max_tokens: int = 1024,
+                       temperature: float = 0.0, retries: int = 3,
+                       system_prompt: str = None, messages: list = None) -> str:
     """Call OpenAI-compatible API endpoint"""
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     
+    if messages is None:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if prompt is not None:
+            messages.append({"role": "user", "content": prompt})
+
     payload = {
         "model": model_name,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature
     }
@@ -162,33 +170,61 @@ def chat_completion_api(endpoint: str, model_name: str, prompt: str,
                 return f"ERROR: {str(e)}"
 
 
-def generate_response(model, tokenizer, prompt: str, max_new_tokens: int = 1024,
-                     use_api: bool = False, use_vllm: bool = False, vllm_model = None,
+def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int = 1024,
+                     use_api: bool = False, use_vllm: bool = False, vllm_model=None,
                      api_endpoint: str = None, api_model: str = None, api_key: str = "",
-                     batch_size: int = None, **kwargs) -> str:
+                     batch_size: int = None, system_prompt: str = None,
+                     messages: list = None, **kwargs) -> str:
     """Generate response using local inference, vLLM, or API
-    
+
     Args:
         batch_size: Ignored (used only for vLLM config, not here)
+        system_prompt: Optional system instruction for chat-style models
         **kwargs: Ignored additional parameters for compatibility
     """
+    if messages is None:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if prompt is not None:
+            messages.append({"role": "user", "content": prompt})
+
     if use_api:
-        return chat_completion_api(api_endpoint, api_model, prompt, api_key, max_new_tokens)
-    
+        return chat_completion_api(
+            api_endpoint,
+            api_model,
+            prompt=prompt,
+            api_key=api_key,
+            max_tokens=max_new_tokens,
+            temperature=0.0,
+            system_prompt=system_prompt,
+            messages=messages,
+        )
+
     if use_vllm and vllm_model:
-        # Apply chat template so instruct models receive the same format as the HF path
-        messages = [{"role": "user", "content": prompt}]
-        formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        responses = generate_responses_vllm(vllm_model, [formatted_prompt], max_new_tokens, temperature=0.1)
+        formatted_prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        responses = generate_responses_vllm(
+            vllm_model,
+            [formatted_prompt],
+            max_new_tokens,
+            temperature=0.0
+        )
         return responses[0]
-    
+
     # Local inference with HuggingFace transformers
-    messages = [{"role": "user", "content": prompt}]
-    formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    
+    formatted_prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
+    )
+
     inputs = tokenizer(formatted_prompt, return_tensors="pt", padding=True)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
-    
+
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
@@ -197,8 +233,11 @@ def generate_response(model, tokenizer, prompt: str, max_new_tokens: int = 1024,
             pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
-    
-    response = tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+
+    response = tokenizer.decode(
+        outputs[0][inputs["input_ids"].shape[1]:],
+        skip_special_tokens=True
+    )
     return response.strip()
 
 
@@ -238,7 +277,7 @@ def initialize_vllm(model_path: str, base_model: str = None,
 
 def generate_responses_vllm(vllm_llm: "LLM", prompts: list, 
                            max_tokens: int = 1024,
-                           temperature: float = 0.1) -> list:
+                           temperature: float = 0.0) -> list:
     """Generate responses using vLLM batch inference
     
     Args:
@@ -304,7 +343,7 @@ def load_jsonl_dataset(source: str) -> Dataset:
 def collect_huggingface_benchmark(task_name: str, dataset_name: str, subset_name: str, 
                                   model, tokenizer, output_file: str, max_samples: int = None,
                                   **api_kwargs):
-    """Collect responses from HuggingFace datasets (CTI-Bench, MMLU-CS, SECURE, SecBench, CyberMetric, RedSageMCQ)"""
+    """Collect responses from HuggingFace datasets (CTI-Bench, MMLU-CS, SECURE, SecBench, RedSageMCQ)"""
     print(f"\n{'='*70}")
     print(f"Collecting {task_name.upper()} responses")
     print(f"Dataset: {dataset_name}/{subset_name}")
@@ -473,100 +512,169 @@ def collect_athenabench_jsonl(task_name: str, jsonl_url: str,
     return len(results)
 
 
-
-
-
 def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
                    **api_kwargs):
-    """Collect responses from SecEval"""
+    """Collect responses from SecEval using chat-few-shot prompting"""
     print(f"\n{'='*70}")
     print(f"Collecting SecEval responses")
     print(f"{'='*70}")
-    
-    # Load SecEval dataset
+
     dataset_url = "https://huggingface.co/datasets/XuanwuAI/SecEval/resolve/main/questions.json"
-    response = requests.get(dataset_url)
+    response = requests.get(dataset_url, timeout=30)
+    response.raise_for_status()
     questions = response.json()
-    
+
     if max_samples:
         questions = questions[:max_samples]
-    
+
     print(f"Total samples: {len(questions)}")
-    
-    # Few-shot examples
+
     instruction = "Below are multiple-choice questions concerning cybersecurity. Please select the correct answers and respond with the letters ABCD only."
-    
-    few_shot_examples = [
-        {"Q": "What protocol operates at the network layer?", "A": "A. FTP", "B": "B. HTTP", "C": "C. IP", "D": "D. SMTP", "Answer": "C"},
-        {"Q": "Which port does HTTPS typically use?", "A": "A. 80", "B": "B. 443", "C": "C. 22", "D": "D. 21", "Answer": "B"},
-        {"Q": "What does 'CIA' stand for in security?", "A": "A. Central Intelligence Agency", "B": "B. Confidentiality, Integrity, Availability", "C": "C. Computer Internet Access", "D": "D. Certified Information Auditor", "Answer": "B"}
+
+    chat_few_shot = [
+        {
+            "role": "user",
+            "content": "Question: Which mitigation prevent stack overflow bug? A: Stack Canary. B: ALSR. C: CFI. D: Code Signing."
+        },
+        {
+            "role": "assistant",
+            "content": "Answer: ABC",
+        },
     ]
-    
-    # Collect responses
+
     results = []
-    total = len(questions)
     for idx, q in enumerate(tqdm(questions, desc="Collecting SecEval")):
-        # SecEval has 'choices' as a list: ["A: text", "B: text", "C: text", "D: text"]
-        choices_list = q.get('choices', [])
-        
-        # Parse choices into dict
-        choices = {}
-        for choice in choices_list:
-            # Format is "A: Some text" or "A) Some text"
-            if ':' in choice or ')' in choice:
-                separator = ':' if ':' in choice else ')'
-                parts = choice.split(separator, 1)
-                if len(parts) == 2:
-                    label = parts[0].strip()
-                    text = parts[1].strip()
-                    choices[label] = text
-        
-        # Skip if missing choices
-        if len(choices) < 4:
+        question = q.get("question", "")
+        choices = q.get("choices", [])
+
+        if not question or not choices:
             continue
-        
-        # Format prompt with few-shot examples
-        prompt = instruction + "\n\n"
-        for ex in few_shot_examples:
-            prompt += f"Q: {ex['Q']}\n{ex['A']}\n{ex['B']}\n{ex['C']}\n{ex['D']}\nAnswer: {ex['Answer']}\n\n"
-        
-        prompt += f"Q: {q['question']}\n"
-        prompt += f"A. {choices.get('A', '')}\nB. {choices.get('B', '')}\nC. {choices.get('C', '')}\nD. {choices.get('D', '')}\nAnswer:"
-        
-        # Generate response
-        response = generate_response(model, tokenizer, prompt, max_new_tokens=1024, **api_kwargs)
-        
-        # Get correct answer
-        correct_answer = q.get('answer', '')
-        
-        # Store raw result
+
+        question_text = "Question: " + question + " " + " ".join(choices)
+        question_text = question_text.replace("\n", " ")
+
+        messages = (
+            [{"role": "system", "content": instruction}]
+            + chat_few_shot
+            + [{"role": "user", "content": question_text}]
+        )
+
+        response = generate_response(
+            model,
+            tokenizer,
+            messages=messages,
+            max_new_tokens=1024,
+            **api_kwargs,
+        )
+
         result = {
             "task": "seceval",
             "index": idx,
-            "prompt": prompt,
-            "ground_truth": correct_answer,
+            "prompt": messages,
+            "ground_truth": q.get("answer", ""),
             "model_response": response,
             "metadata": {
-                "question": q['question'],
+                "question": question,
                 "choices": choices,
-                "id": q.get('id', ''),
-                "task_type": "seceval",  # Multi-select MCQ
-                "source": q.get('source', ''),
-                "topics": q.get('topics', []),
-                "keyword": q.get('keyword', '')
-            }
+                "id": q.get("id", ""),
+                "task_type": "seceval",
+                "source": q.get("source", ""),
+                "topics": q.get("topics", []),
+                "keyword": q.get("keyword", ""),
+                "prompt_style": "chat_fewshot",
+            },
         }
         results.append(result)
-    
-    # Save to JSONL
-    with open(output_file, 'w') as f:
+
+    with open(output_file, "w", encoding="utf-8") as f:
         for result in results:
-            f.write(json.dumps(result) + '\n')
-    
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
     print(f"✓ Saved {len(results)} responses to: {output_file}")
     return len(results)
 
 
+def collect_cybermetric(model, tokenizer, output_file: str, max_samples: int = None,
+                        **api_kwargs):
+    """Collect responses from CyberMetric"""
+    print(f"\n{'='*70}")
+    print("Collecting CyberMetric responses")
+    print(f"{'='*70}")
+
+    dataset = load_dataset(
+        "RISys-Lab/Benchmarks_CyberSec_CyberMetrics",
+        "cyberMetric_500",
+        split="test"
+    )
+
+    if max_samples:
+        dataset = dataset.select(range(min(max_samples, len(dataset))))
+
+    print(f"Total samples: {len(dataset)}")
+
+    system_prompt = "You are a security expert who answers questions."
+    results = []
+
+    for idx, sample in enumerate(tqdm(dataset, desc="Collecting CYBERMETRIC")):
+        question = sample.get("question", "")
+        answers = sample.get("answers", {}) or {}
+        ground_truth = str(sample.get("solution", "")).strip()
+
+        if not question:
+            continue
+
+        if not answers:
+            answers = sample.get("choices", {}) or sample.get("options", {}) or {}
+
+        if isinstance(answers, list):
+            letters = ["A", "B", "C", "D"]
+            answers = {letters[i]: str(opt) for i, opt in enumerate(answers[:4])}
+
+        if not isinstance(answers, dict) or len(answers) == 0:
+            continue
+
+        options = ", ".join([f"{key}) {value}" for key, value in answers.items()])
+
+        prompt = (
+            f"Question: {question}\n"
+            f"Options: {options}\n\n"
+            f"Choose the correct answer (A, B, C, or D) only. "
+            f"Always return in this format: 'ANSWER: X'"
+        )
+
+        response = generate_response(
+            model,
+            tokenizer,
+            prompt,
+            max_new_tokens=1024,
+            system_prompt=system_prompt,
+            **api_kwargs
+        )
+
+        result = {
+            "task": "cybermetric",
+            "index": idx,
+            "prompt": prompt,
+            "ground_truth": ground_truth,
+            "model_response": response,
+            "metadata": {
+                "dataset": "RISys-Lab/Benchmarks_CyberSec_CyberMetrics",
+                "subset": "cyberMetric_500",
+                "sample_id": idx,
+                "task_type": "mcq",
+                "question": question,
+                "choices": answers,
+            }
+        }
+        results.append(result)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+    print(f"✓ Saved {len(results)} responses to: {output_file}")
+    return len(results)
+    
 def collect_cissp(model, tokenizer, output_file: str, dataset_path: str = None,
                  max_samples: int = None, **api_kwargs):
     """Collect responses from CISSP"""
@@ -793,7 +901,6 @@ def main():
         "secure_cwet": ("hf", "RISys-Lab/Benchmarks_CyberSec_SECURE", "CWET"),
         "secure_kcv": ("hf", "RISys-Lab/Benchmarks_CyberSec_SECURE", "KCV"),
         "secbench": ("hf", "RISys-Lab/Benchmarks_CyberSec_SecBench", "MCQs_English"),
-        "cybermetric": ("hf", "RISys-Lab/Benchmarks_CyberSec_CyberMetrics", "cyberMetric_500"),
         
         # RedSageMCQ (5 subsets, 30K total samples)
         "redsage_frameworks": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_knowledge_frameworks"),
@@ -832,6 +939,9 @@ def main():
             elif task_name == "seceval":
                 count = collect_seceval(model, tokenizer, output_file, 
                                        args.max_samples, **api_kwargs)
+            elif task_name == "cybermetric":
+                count = collect_cybermetric(model, tokenizer, output_file,
+                                        args.max_samples, **api_kwargs)
             elif task_name == "cissp":
                 count = collect_cissp(model, tokenizer, output_file, args.cissp_path,
                                      args.max_samples, **api_kwargs)
