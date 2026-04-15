@@ -1,15 +1,49 @@
 #!/usr/bin/env python3
 """
-Flag questions with likely wrong key answers using model agreement voting.
+Flag questions with likely wrong key answers using model agreement voting and LLM-as-a-Judge.
 
 This script analyzes evaluation results from multiple models and flags questions
 where most models agree on an alternative answer to the benchmark's key answer.
 This helps identify potentially incorrect ground truth labels in benchmarks.
 
-Usage:
-    python flag_wrong_key_answers.py --detailed_results_dirs eval_dir1 eval_dir2 \
-                                     --agreement_threshold 0.5 \
-                                     --output flagged_questions.json
+The script supports both exact matching for choice-based tasks (MCQ, etc.) and
+semantic comparison using LLM-as-a-Judge for open-ended tasks, with optional
+vLLM acceleration for faster inference.
+
+Key Features:
+- Model agreement voting to detect potentially incorrect benchmark answers
+- LLM-as-a-Judge semantic comparison for open-ended cybersecurity tasks
+- Support for both HuggingFace Transformers and vLLM inference backends
+- Comprehensive reporting with detailed flagging statistics
+- Integration with existing evaluation pipeline (run_evaluate_llm_judge.py)
+
+Usage Examples:
+
+1. Basic usage with HuggingFace Transformers:
+    python flag_wrong_key_answers.py \
+        --detailed_results_dirs eval_dir1 eval_dir2 \
+        --agreement_threshold 0.5 \
+        --judge_model "meta-llama/Llama-3.1-8B-Instruct" \
+        --output flagged_questions.json
+
+2. With vLLM for faster inference:
+    python flag_wrong_key_answers.py \
+        --detailed_results_dirs eval_dir1 eval_dir2 \
+        --agreement_threshold 0.5 \
+        --judge_model "meta-llama/Llama-3.1-8B-Instruct" \
+        --judge_use_vllm \
+        --judge_gpu_memory_utilization 0.8 \
+        --output flagged_questions.json
+
+Supported Task Types:
+- Choice-based: mcq, seceval, cybermetric, cissp, mmlu_cs, secure, secbench, ckt
+- Open-ended: rcm, vsp, ate, rms, taa (require LLM judge for semantic comparison)
+
+Dependencies:
+- Core: torch, transformers, tqdm, pathlib
+- Optional: vllm (for accelerated inference)
+- Reused functions: load_model_and_tokenizer, generate_response from evaluate.py
+- Reused functions: initialize_judge_vllm, generate_judge_responses_vllm from run_evaluate_llm_judge.py
 """
 
 import argparse
@@ -20,8 +54,14 @@ from typing import Dict, List, Any
 from collections import defaultdict, Counter
 from tqdm import tqdm
 
-# Import from evaluate.py for model loading and LLM judge functionality
+# Import from evaluate.py for model loading and response generation
 from evaluate import load_model_and_tokenizer, generate_response
+
+# Import judge functions from run_evaluate_llm_judge.py for reuse
+from run_evaluate_llm_judge import (
+    initialize_judge_vllm,
+    generate_judge_responses_vllm,
+)
 
 # Optional vLLM import for fast judge inference
 try:
@@ -29,12 +69,6 @@ try:
     HAS_VLLM = True
 except ImportError:
     HAS_VLLM = False
-
-# Import judge functions from run_evaluate_llm_judge.py for reuse
-from run_evaluate_llm_judge import (
-    initialize_judge_vllm,
-    generate_judge_responses_vllm,
-)
 
 
 # Task types that use choice-based answers (exact matching)
@@ -360,8 +394,17 @@ def flag_questions_in_files(aggregated_results: Dict[str, List[Dict]],
 
 
 def main():
+    """Main entry point for the flag_wrong_key_answers script.
+
+    Parses command-line arguments, loads evaluation results from multiple models,
+    applies agreement voting to identify potentially incorrect benchmark answers,
+    and generates a comprehensive flagging report.
+
+    Supports both HuggingFace Transformers and vLLM for judge model inference.
+    Requires judge model for semantic comparison of open-ended tasks.
+    """
     parser = argparse.ArgumentParser(
-        description="Flag questions with likely wrong key answers using model voting"
+        description="Flag questions with likely wrong key answers using model voting and LLM-as-a-Judge"
     )
 
     parser.add_argument(
