@@ -335,7 +335,7 @@ The content of the network security incident is:
 {extra_context.get('input', question) if extra_context else question}
 
 The question raised regarding the content of this cybersecurity incident is:
-{question}
+{extra_context.get('instruction', question) if extra_context else question}
 
 The expected answer (ground truth) is:
 {ground_truth}
