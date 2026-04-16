@@ -468,8 +468,8 @@ def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
         
         # For sevenllm, fallback to extracting score from text
         if task_type == "sevenllm":
-            # Try to find a number 1-5 in the response
-            score_match = re.search(r'["\']?score["\']?\s*[:=]\s*(\d)', judge_response)
+            # Try to find the full numeric score in the response, then clamp to 1-5
+            score_match = re.search(r'["\']?score["\']?\s*[:=]\s*(\d+)\b', judge_response)
             if score_match:
                 score = int(score_match.group(1))
             else:
