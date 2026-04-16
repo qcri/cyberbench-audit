@@ -785,8 +785,12 @@ def collect_cissp(model, tokenizer, output_file: str, dataset_path: str = None,
     return len(results)
 
 
-def is_english_sample(text: str) -> bool:
-    """Check if text is English (no Chinese characters)."""
+def is_non_chinese_sample(text: str) -> bool:
+    """Check if text contains no Chinese characters.
+    
+    Note: This only filters out Chinese text; it does not verify the text is English.
+    Used for SEvenLLM-Bench which is specifically bilingual (EN/ZH).
+    """
     import re
     # Chinese Unicode ranges: CJK Unified Ideographs
     chinese_pattern = re.compile(r'[\u4e00-\u9fff]')
@@ -823,11 +827,11 @@ def collect_sevenllm(model, tokenizer, output_file: str, max_samples: int = None
     
     print(f"Total samples in dataset: {len(samples)}")
     
-    # Filter to English-only samples based on INPUT field (not instruction)
+    # Filter to non-Chinese samples based on INPUT field (not instruction)
     # The dataset has 650 samples with English input and 650 with Chinese input
-    english_samples = [s for s in samples if is_english_sample(s.get('input', ''))]
+    english_samples = [s for s in samples if is_non_chinese_sample(s.get('input', ''))]
     
-    print(f"English samples: {len(english_samples)}")
+    print(f"Non-Chinese samples: {len(english_samples)}")
     
     if max_samples:
         english_samples = english_samples[:max_samples]
