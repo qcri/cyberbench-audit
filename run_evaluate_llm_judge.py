@@ -422,10 +422,16 @@ def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
         # Handle sevenllm with SEvenLLM's 1-5 scoring scale
         if task_type == "sevenllm":
             score = parsed.get("score", 1)
-            # Normalize to 1-5 if somehow got float
-            if isinstance(score, float) and score <= 1.0:
-                score = int(score * 5)
-            score = max(1, min(5, int(score)))  # Clamp to 1-5
+            try:
+                numeric_score = float(score)
+            except (TypeError, ValueError):
+                numeric_score = 1.0
+
+            # Normalize to 1-5 if somehow got a 0-1 score
+            if numeric_score <= 1.0:
+                numeric_score *= 5
+
+            score = max(1, min(5, int(numeric_score)))  # Clamp to 1-5
             reason = parsed.get("reason", "No reason provided")
             # Consider score >= 4 as "correct" for accuracy metrics
             is_correct = score >= 4
