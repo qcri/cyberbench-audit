@@ -74,7 +74,6 @@ def get_task_type(task_name: str) -> str:
         "rms": "rms",  # Risk mitigation strategies
         "taa": "taa",  # Threat actor attribution (AthenaBench)
         "cti_taa": "taa",  # Threat actor attribution (CTI-Bench)
-        
         # SEvenLLM-Bench tasks (structured JSON extraction)
         "sevenllm": "sevenllm",  # Multi-category CTI extraction tasks
     }
