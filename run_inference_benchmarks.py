@@ -20,9 +20,29 @@ import json
 import torch
 import requests
 import argparse
+import re
 from tqdm import tqdm
 from datasets import load_dataset, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+SEVENLLM_PROMPT_DICT = {
+    "prompt_input": (
+        "Below is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
+    ),
+    "prompt_input_qwen": (
+        "<|im_start|>user\nBelow is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Input:\n{input}### Response:<|im_end|>\n<|im_start|>assistant\n"
+    ),
+    "prompt_no_input": (
+        "Below is an instruction that describes a task. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Response:"
+    ),
+}
 
 # Optional peft import for LoRA adapter support
 try:
@@ -807,7 +827,7 @@ def collect_sevenllm(model, tokenizer, output_file: str, max_samples: int = None
     from huggingface_hub import hf_hub_download
     
     print(f"\n{'='*70}")
-    print("Collecting SEVENLLM responses (English only)")
+    print("Collecting SEVENLLM responses (English filtered)")
     print("Dataset: Multilingual-Multimodal-NLP/SEVENLLM-Dataset")
     print(f"{'='*70}")
     
@@ -847,8 +867,19 @@ def collect_sevenllm(model, tokenizer, output_file: str, max_samples: int = None
         
         # Format prompt using SEvenLLM's native format: instruction + input
         # This matches their training and evaluation approach
-        prompt = f"{instruction}\n\n{input_text}"
-        
+        # Format prompt to mirror the original SEvenLLM inference script
+        tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+        if "qwen" in tokenizer_name:
+            prompt = SEVENLLM_PROMPT_DICT["prompt_input_qwen"].format(
+                instruction=instruction,
+                input=input_text,
+            )
+        else:
+            prompt = SEVENLLM_PROMPT_DICT["prompt_input"].format(
+                instruction=instruction,
+                input=input_text,
+            )
+
         # Generate response
         response = generate_response(model, tokenizer, prompt, max_new_tokens=2048, **api_kwargs)
         
