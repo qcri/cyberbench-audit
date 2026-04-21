@@ -1,0 +1,83 @@
+{
+  "model_path": "meta-llama/Llama-3.1-8B-Instruct",
+  "judge_model": "meta-llama/Llama-3.1-8B-Instruct",
+  "judge_api": false,
+  "is_base_model": false,
+  "tasks": {
+    "MMLU_CS": {
+      "accuracy": 0.6,
+      "correct": 3,
+      "total": 5
+    },
+    "RMS": {
+      "accuracy": 0.2,
+      "correct": 1,
+      "total": 5
+    },
+    "SECURE_CWET": {
+      "accuracy": 0.6,
+      "correct": 3,
+      "total": 5
+    },
+    "CYBERMETRIC": {
+      "accuracy": 0.6,
+      "correct": 3,
+      "total": 5
+    },
+    "SECEVAL": {
+      "accuracy": 0.4,
+      "correct": 2,
+      "total": 5
+    },
+    "RCM": {
+      "accuracy": 0.6,
+      "correct": 3,
+      "total": 5
+    },
+    "CKT": {
+      "accuracy": 0.8,
+      "correct": 4,
+      "total": 5
+    },
+    "SECURE_MAET": {
+      "accuracy": 0.8,
+      "correct": 4,
+      "total": 5
+    },
+    "VSP": {
+      "mad": 10.0,
+      "accuracy": 0.0,
+      "total": 5,
+      "extraction_success_count": 5
+    },
+    "CISSP": {
+      "accuracy": 0.8,
+      "correct": 4,
+      "total": 5
+    },
+    "MCQ": {
+      "accuracy": 0.6,
+      "correct": 3,
+      "total": 5
+    },
+    "TAA": {
+      "accuracy": 0.6,
+      "correct": 3,
+      "total": 5
+    },
+    "SECURE_KCV": {
+      "accuracy": 1.0,
+      "correct": 5,
+      "total": 5
+    },
+    "ATE": {
+      "precision": 0.20652173913043478,
+      "recall": 0.4523809523809524,
+      "f1": 0.2835820895522388,
+      "exact_match": 0.0,
+      "tp_total": 19,
+      "fp_total": 73,
+      "fn_total": 23
+    }
+  }
+}

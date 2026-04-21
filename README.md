@@ -65,7 +65,32 @@ Our framework assesses benchmarks across six dimensions:
 - **RedSage-Bench**: 5 categories (Frameworks, Generals, Skills, CLI, Kali)
 
 ## Installation
+### Containerized (Docker) Setup
 
+You can build and run the project in a GPU-enabled Docker container. This is the recommended way to ensure all dependencies (including CUDA, PyTorch, and vLLM) are correctly installed.
+
+#### Build the Docker image:
+
+```bash
+docker build -t secbench-gpu .
+```
+
+#### Run the container with GPU support:
+
+```bash
+# To use all GPUs:
+docker run --gpus all -it secbench-gpu
+
+# To use a specific GPU (e.g., GPU 0):
+docker run --gpus device=0 -it secbench-gpu
+```
+
+**Note:**
+- You must have the NVIDIA Container Toolkit installed on your host. See: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+- Your host must have compatible NVIDIA drivers and a CUDA-capable GPU.
+- If you see errors about GPU reset or detection, reboot your machine to reset the GPU state.
+
+Once inside the container, you can run all scripts as described below.
 ### Requirements
 
 - Python ≥ 3.10 (tested with 3.11)

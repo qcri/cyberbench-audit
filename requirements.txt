@@ -15,7 +15,7 @@ pyyaml>=6.0
 python-dotenv>=1.0.0
 
 # Optional: Fast inference (uncomment if using vLLM)
-# vllm>=0.2.0
+vllm>=0.2.0
 
 # Optional: Accelerated training
 # accelerate>=0.24.0
