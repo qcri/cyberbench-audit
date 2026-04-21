@@ -17,6 +17,9 @@ import json
 import torch
 import requests
 import argparse
+from dotenv import load_dotenv
+load_dotenv()
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, List
 from tqdm import tqdm
@@ -349,6 +352,16 @@ def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
                 - judge_response: str (raw judge output)
                 - justification: str (judge's explanation)
     """
+    # Detect judge API failures — content filter, timeout, exhausted retries, empty response.
+    # These should not count as wrong answers; return skipped=True so the caller
+    # excludes this sample from both numerator and denominator.
+    if (not judge_response.strip()
+            or judge_response.startswith("ERROR:")
+            or "content management policy" in judge_response
+            or "content_filter" in judge_response):
+        return {"is_correct": False, "skipped": True, "judge_response": judge_response,
+                "justification": "Judge API failure — sample excluded from scoring"}
+
     # Parse JSON response with error handling
     try:
         # Extract JSON from response (handle markdown code blocks)
@@ -385,10 +398,31 @@ def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
         }
         
     except (json.JSONDecodeError, AttributeError) as e:
-        # Fallback to legacy parsing if JSON parsing fails
-        print(f"Warning: Failed to parse JSON from judge response: {e}")
-        print(f"Raw response: {judge_response[:200]}...")
-        
+        # The justification field often contains unescaped backslashes or quotes
+        # (Windows registry paths, code snippets) which break json.loads.
+        # First attempt: regex-extract the "verdict" key directly — it is always
+        # a clean word and is unaffected by special characters elsewhere.
+        verdict_match = re.search(
+            r'"verdict"\s*:\s*"(CORRECT|INCORRECT|PARTIAL)"',
+            json_str if 'json_str' in dir() else judge_response,
+            re.IGNORECASE,
+        )
+        if verdict_match:
+            verdict = verdict_match.group(1).upper()
+            # Also try to grab justification (best-effort, may be truncated)
+            just_match = re.search(r'"justification"\s*:\s*"([^"]*)"', judge_response)
+            justification = just_match.group(1) if just_match else "Justification could not be parsed"
+
+            if task_type == "vsp":
+                # vsp uses a different key; fall through to text fallback below
+                pass
+            else:
+                return {
+                    "is_correct": verdict == "CORRECT",
+                    "judge_response": judge_response,
+                    "justification": justification,
+                }
+
         if task_type == "vsp":
             # For VSP, try to extract CVSS vector with regex as fallback
             cvss_pattern = r'(?:CVSS:3\.[01]/)?AV:[A-Z]+/AC:[A-Z]+/PR:[A-Z]+/UI:[A-Z]+/S:[A-Z]+/C:[A-Z]+/I:[A-Z]+/A:[A-Z]+'
@@ -404,11 +438,11 @@ def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
                 "extraction_success": False,
                 "judge_response": judge_response
             }
-        
-        # For other tasks, fallback to text matching
+
+        # Final fallback: plain text matching
         judge_response_upper = judge_response.strip().upper()
         is_correct = "CORRECT" in judge_response_upper and "INCORRECT" not in judge_response_upper
-        
+
         return {
             "is_correct": is_correct,
             "judge_response": judge_response,
@@ -829,20 +863,28 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
     detailed_results = []
     mad_scores = []
     extraction_success_count = 0
-    
+
     # For ATE metrics (P/R/F1)
     tp_total = 0
     fp_total = 0
     fn_total = 0
     exact_matches = 0
-    
-    for idx, sample in enumerate(tqdm(dataset, desc=f"Judging {task_type.upper()}")):
-        # Handle both pre-collected format (prompt/ground_truth) and legacy format (Prompt/GT)
-        question = sample.get('prompt', sample.get('Prompt', ''))
+
+    use_api  = judge_api_kwargs.get('use_api', False)
+    n_workers = judge_api_kwargs.get('n_workers', 20)
+
+    # ── Pass 1: build all judge prompts ───────────────────────────────────────
+    items = []  # list of (idx, question, ground_truth, response, extra_context)
+    judge_prompts = []
+
+    for idx, sample in enumerate(dataset):
+        question     = sample.get('prompt', sample.get('Prompt', ''))
         ground_truth = sample.get('ground_truth', sample.get('GT', ''))
-        response = sample['model_response']
-        
-        # Prepare extra context from metadata
+        response     = sample['model_response']
+        # Strip thinking chain from CoT/reasoning models (e.g. Qwen3, DeepSeek-R1)
+        if '</think>' in response:
+            response = response.split('</think>')[-1].strip()
+
         extra_context = {}
         metadata = sample.get('metadata', {})
         if 'choices' in metadata:
@@ -851,15 +893,72 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
                 extra_context['choices'] = '\n'.join([f"{k}. {v}" for k, v in sorted(choices.items())])
             elif isinstance(choices, list):
                 extra_context['choices'] = choices
-        
-        # Get judge's evaluation
-        judge_result = judge_answer(
-            judge_model, judge_tokenizer, task_type,
-            question, response, ground_truth, extra_context,
-            judge_vllm=judge_vllm,
-            **judge_api_kwargs
-        )
-        
+
+        jp = create_judge_prompt(task_type, question, response, ground_truth, extra_context)
+        items.append((idx, question, ground_truth, response, extra_context))
+        judge_prompts.append(jp)
+
+    # ── Pass 2: generate all judge responses ──────────────────────────────────
+    if judge_vllm:
+        # vLLM: single batch call for entire task
+        print(f"  Batch-judging {len(judge_prompts)} samples via vLLM …")
+        judge_responses = generate_judge_responses_vllm(judge_vllm, judge_prompts, max_tokens=512)
+
+    elif use_api:
+        # API: parallel requests with ThreadPoolExecutor
+        api_ep  = judge_api_kwargs.get('api_endpoint')
+        api_mod = judge_api_kwargs.get('api_model')
+        api_key = judge_api_kwargs.get('api_key', '')
+        api_sty = judge_api_kwargs.get('api_style', 'chat_completions')
+        print(f"  Parallel-judging {len(judge_prompts)} samples via API (workers={n_workers}) …")
+
+        judge_responses = [None] * len(judge_prompts)
+
+        def _call_api(i, prompt):
+            from evaluate import generate_response as _gr
+            return i, _gr(
+                None, None, prompt,
+                use_api=True,
+                api_endpoint=api_ep,
+                api_model=api_mod,
+                api_key=api_key,
+                api_style=api_sty,
+                max_new_tokens=512,
+            )
+
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_call_api, i, p): i for i, p in enumerate(judge_prompts)}
+            for fut in tqdm(as_completed(futures), total=len(futures),
+                            desc=f"Judging {task_type.upper()} (API)"):
+                i, resp = fut.result()
+                judge_responses[i] = resp
+
+    else:
+        # Local HF inference: sequential
+        judge_responses = []
+        for jp in tqdm(judge_prompts, desc=f"Judging {task_type.upper()}"):
+            from evaluate import generate_response as _gr
+            r = _gr(judge_model, judge_tokenizer, jp, max_new_tokens=512)
+            judge_responses.append(r)
+
+    skipped_count = 0
+
+    # ── Pass 3: score all responses ────────────────────────────────────────────
+    for (idx, question, ground_truth, response, extra_context), judge_raw in zip(items, judge_responses):
+        judge_result = parse_judge_response(judge_raw or "", task_type)
+
+        # Skip samples where the judge API failed (content filter, timeout, etc.)
+        if judge_result.get('skipped'):
+            skipped_count += 1
+            if detailed_output is not None:
+                detailed_results.append({
+                    "index": idx, "question": question, "ground_truth": ground_truth,
+                    "model_response": response, "judge_response": judge_raw,
+                    "judge_justification": judge_result.get('justification', ''),
+                    "is_correct": False, "skipped": True,
+                })
+            continue
+
         # Handle VSP (regression) vs other tasks (classification)
         if task_type == "vsp":
             extracted_vector = judge_result.get('extracted_vector', '')
@@ -972,9 +1071,13 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
         results = {
             "accuracy": accuracy,
             "correct": correct,
-            "total": total
+            "total": total,
+            "skipped": skipped_count,
         }
-    
+
+    if skipped_count:
+        print(f"  ⚠ {skipped_count} samples skipped (judge API failure — excluded from accuracy)")
+
     # Save detailed results
     if detailed_output is not None:
         with open(detailed_output, 'w') as f:
@@ -1044,32 +1147,82 @@ def generate_summary_from_detailed(detailed_dir: str) -> Dict[str, Any]:
     detailed_path = Path(detailed_dir)
     for f in sorted(detailed_path.glob('*_detailed.jsonl')):
         task = f.stem.replace('_detailed', '')
-        content = f.read_text()
-        objects = parse_concatenated_json(content)
-        
+        objects = []
+        with open(f) as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        objects.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+
         if not objects:
             continue
-        
-        # Calculate metrics
+
         total = len(objects)
-        correct = sum(1 for obj in objects if obj.get('is_correct'))
-        
+
+        # VSP: MAD-based regression task — no is_correct field
+        if 'mad' in objects[0]:
+            mad_scores = [obj.get('mad', 10.0) for obj in objects]
+            mean_mad = sum(mad_scores) / len(mad_scores)
+            vsp_accuracy = max(0.0, 1.0 - (mean_mad / 7.7))
+            pseudo_correct = round(vsp_accuracy * total)
+            task_metrics = {
+                'accuracy': round(vsp_accuracy, 4),
+                'correct': pseudo_correct,
+                'total': total,
+                'mean_mad': round(mean_mad, 3),
+                'extraction_success': sum(1 for o in objects if o.get('extraction_success')),
+            }
+            summary['tasks'][task.upper()] = task_metrics
+            summary['total_correct'] += pseudo_correct
+            summary['total_samples'] += total
+            continue
+
+        # ATE: TP/FP/FN task — use exact_match as is_correct
+        if 'tp' in objects[0]:
+            tp_total = sum(o.get('tp', 0) for o in objects)
+            fp_total = sum(o.get('fp', 0) for o in objects)
+            fn_total = sum(o.get('fn', 0) for o in objects)
+            exact_matches = sum(1 for o in objects if o.get('exact_match'))
+            precision = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0
+            recall = tp_total / (tp_total + fn_total) if (tp_total + fn_total) > 0 else 0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+            task_metrics = {
+                'accuracy': round(f1, 4),
+                'correct': exact_matches,
+                'total': total,
+                'precision': round(precision, 4),
+                'recall': round(recall, 4),
+                'f1': round(f1, 4),
+                'exact_matches': exact_matches,
+            }
+            summary['tasks'][task.upper()] = task_metrics
+            summary['total_correct'] += exact_matches
+            summary['total_samples'] += total
+            continue
+
+        # Standard classification tasks: use is_correct (exclude skipped samples)
+        skipped = sum(1 for obj in objects if obj.get('skipped'))
+        evaluated = total - skipped
+        correct = sum(1 for obj in objects if obj.get('is_correct') and not obj.get('skipped'))
         task_metrics = {
-            'accuracy': correct / total if total > 0 else 0,
+            'accuracy': correct / evaluated if evaluated > 0 else 0,
             'correct': correct,
-            'total': total
+            'total': evaluated,
+            'skipped': skipped,
         }
-        
+
         # Add precision/recall/f1 if present
         if objects and 'precision' in objects[0]:
             precisions = [obj.get('precision', 0) for obj in objects]
             recalls = [obj.get('recall', 0) for obj in objects]
             f1_scores = [obj.get('f1', 0) for obj in objects]
-            
             task_metrics['avg_precision'] = sum(precisions) / len(precisions) if precisions else 0
             task_metrics['avg_recall'] = sum(recalls) / len(recalls) if recalls else 0
             task_metrics['avg_f1'] = sum(f1_scores) / len(f1_scores) if f1_scores else 0
-        
+
         summary['tasks'][task.upper()] = task_metrics
         summary['total_correct'] += correct
         summary['total_samples'] += total
@@ -1120,7 +1273,12 @@ def main():
     parser.add_argument("--judge_api_model", type=str,
                        help="API model name for judge")
     parser.add_argument("--judge_api_key", type=str, default="",
-                       help="Judge API key")
+                       help="Judge API key (defaults to AZURE_API_KEY env var)")
+    parser.add_argument("--n_workers", type=int, default=20,
+                       help="Parallel API worker threads for judging (default: 20)")
+    parser.add_argument("--judge_api_style", type=str, default="chat_completions",
+                       choices=["chat_completions", "azure_responses"],
+                       help="API style for judge: 'chat_completions' (default) or 'azure_responses' (GPT-5.4 / Azure Responses API)")
     
     # vLLM options for judge
     parser.add_argument("--judge_use_vllm", action="store_true",
@@ -1191,17 +1349,22 @@ def main():
         )
         judge_model = None
         judge_tokenizer = None
+    elif args.judge_use_api:
+        # Check endpoint/model BEFORE falling through to any other path
+        if not args.judge_api_endpoint or not args.judge_api_model:
+            parser.error(
+                "--judge_use_api requires --judge_api_endpoint and --judge_api_model. "
+                "Both were empty/missing — refusing to silently fall back to a local model. "
+                "Either provide the endpoint/model, or omit --judge_use_api."
+            )
+        judge_model = None
+        judge_tokenizer = None
+        print(f"\nUsing API judge: {args.judge_api_model} at {args.judge_api_endpoint}")
     elif args.judge_model:
         print(f"\nLoading judge model: {args.judge_model}")
         judge_model, judge_tokenizer = load_model_and_tokenizer(
             args.judge_model, args.judge_base_model, False
         )
-    elif args.judge_use_api:
-        if not args.judge_api_endpoint or not args.judge_api_model:
-            parser.error("--judge_api_endpoint and --judge_api_model required")
-        judge_model = None
-        judge_tokenizer = None
-        print(f"\nUsing API judge model: {args.judge_api_model}")
     else:
         # Use same model as judge
         judge_model = model
@@ -1236,7 +1399,9 @@ def main():
         'use_api': args.judge_use_api,
         'api_endpoint': args.judge_api_endpoint,
         'api_model': args.judge_api_model,
-        'api_key': args.judge_api_key
+        'api_key': args.judge_api_key or os.getenv("AZURE_API_KEY", ""),
+        'api_style': args.judge_api_style,
+        'n_workers': args.n_workers,
     }
     
     # Load metadata from response directory if available
@@ -1256,6 +1421,7 @@ def main():
         "model_path": response_metadata.get("model_path") or args.model_path,
         "judge_model": args.judge_model or args.judge_api_model or "same",
         "judge_api": args.judge_use_api,
+        "judge_api_style": args.judge_api_style,
         "is_base_model": args.is_base,
         "tasks": {}
     }
