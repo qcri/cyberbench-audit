@@ -263,7 +263,9 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
 
 def initialize_vllm(model_path: str, base_model: str = None,
                    gpu_memory_utilization: float = 0.9,
-                   max_model_len: int = None) -> "LLM":
+                   max_model_len: int = None,
+                   num_gpu_blocks_override: int = None,
+                   enforce_eager: bool = False) -> "LLM":
     """Initialize vLLM LLM for fast batch inference
 
     Args:
@@ -271,6 +273,13 @@ def initialize_vllm(model_path: str, base_model: str = None,
         base_model: Base model name (if needed)
         gpu_memory_utilization: GPU memory fraction to use
         max_model_len: Maximum model context length (None = model default)
+        num_gpu_blocks_override: Force a specific number of KV cache blocks.
+            Required for models whose KV cache profiler returns 0 (e.g. Gemma-4
+            with heterogeneous head_dim across sliding/global attention layers).
+            Compute as: floor(available_kv_mem_GiB / per_block_mem_GiB).
+        enforce_eager: Disable CUDA graph capture and run in eager mode.
+            Bypasses graph compilation issues on architectures with mixed
+            attention types. Slower but more robust.
 
     Returns:
         vLLM LLM object
@@ -285,6 +294,10 @@ def initialize_vllm(model_path: str, base_model: str = None,
     print(f"GPU memory utilization: {gpu_memory_utilization*100:.0f}%")
     if max_model_len:
         print(f"Max model len: {max_model_len}")
+    if num_gpu_blocks_override:
+        print(f"num_gpu_blocks_override: {num_gpu_blocks_override}")
+    if enforce_eager:
+        print("enforce_eager: True (CUDA graphs disabled)")
 
     if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
         raise RuntimeError("vLLM requires at least one CUDA GPU but none were detected.")
@@ -295,11 +308,16 @@ def initialize_vllm(model_path: str, base_model: str = None,
         dtype="bfloat16",
         tensor_parallel_size=torch.cuda.device_count(),
         trust_remote_code=True,
+        enforce_eager=enforce_eager,
     )
     if max_model_len:
         vllm_kwargs["max_model_len"] = max_model_len
+    if num_gpu_blocks_override:
+        # Needed for models where vLLM's profiler computes 0 KV blocks due to
+        # heterogeneous attention head dims (e.g. Gemma-4 sliding vs global layers).
+        vllm_kwargs["num_gpu_blocks_override"] = num_gpu_blocks_override
     llm = LLM(**vllm_kwargs)
-    
+
     return llm
 
 
@@ -1033,6 +1051,13 @@ def main():
                        help="GPU memory fraction to use with vLLM (0.0-1.0, default: 0.9)")
     parser.add_argument("--max_model_len", type=int, default=None,
                        help="Maximum model context length for vLLM (default: use model's native context)")
+    parser.add_argument("--num_gpu_blocks_override", type=int, default=None,
+                       help="Override number of GPU KV cache blocks. Use when vLLM's profiler returns 0 "
+                            "blocks (heterogeneous attention, e.g. Gemma-4). "
+                            "Estimate: floor(available_kv_mem_GiB / per_block_mem_GiB).")
+    parser.add_argument("--enforce_eager", action="store_true",
+                       help="Disable CUDA graph capture (enforce eager mode). Slower but avoids "
+                            "compilation failures on architectures with mixed attention types.")
     parser.add_argument("--batch_size", type=int, default=16,
                        help="Batch size for vLLM inference (default: 16)")
     
@@ -1074,6 +1099,8 @@ def main():
             args.base_model,
             args.vllm_gpu_memory_utilization,
             args.max_model_len,
+            num_gpu_blocks_override=args.num_gpu_blocks_override,
+            enforce_eager=args.enforce_eager,
         )
         model = None
         # Load tokenizer separately for chat-template formatting (vLLM doesn't expose this)
@@ -1115,6 +1142,11 @@ def main():
     if args.use_vllm:
         metadata["vllm_gpu_memory_utilization"] = args.vllm_gpu_memory_utilization
         metadata["batch_size"] = args.batch_size
+        metadata["max_model_len"] = args.max_model_len
+        if args.num_gpu_blocks_override:
+            metadata["num_gpu_blocks_override"] = args.num_gpu_blocks_override
+        if args.enforce_eager:
+            metadata["enforce_eager"] = True
     
     with open(os.path.join(args.output_dir, "metadata.json"), 'w') as f:
         json.dump(metadata, f, indent=2)
