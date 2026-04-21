@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Run GPT-5.4 LLM judge evaluation for all models with complete response data.
+# No GPU needed — pure API calls. Run on login node or any machine with internet.
+#
+# Usage:
+#   bash run_judge_all_models.sh [--workers N]
+#   AZURE_API_KEY is loaded automatically from .env
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON=/export/home/aberriche/miniconda3/envs/vllm/bin/python
+
+AZURE_JUDGE_ENDPOINT="https://qcri-cyber-cx-ai-03-eus2.openai.azure.com/"
+AZURE_JUDGE_MODEL="gpt-5.4"
+N_WORKERS="${1:-16}"
+
+# Load API key from .env if not already in environment
+if [ -z "${AZURE_API_KEY:-}" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+    set -a
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
+
+if [ -z "${AZURE_API_KEY:-}" ]; then
+    echo "ERROR: AZURE_API_KEY not set and not found in .env"
+    exit 1
+fi
+
+echo "Judge: $AZURE_JUDGE_MODEL at $AZURE_JUDGE_ENDPOINT"
+echo "Workers: $N_WORKERS"
+echo "Start: $(date)"
+echo ""
+
+# Models with complete (or near-complete) response data
+MODELS=(
+    "Llama-Primus-Merged"
+    "Foundation-Sec-8B-Instruct"
+    "RedSage-Qwen3-8B-DPO"
+    "Qwen3.6-35B-A3B"
+    "Gemma-4-31B-it"
+)
+
+for MODEL in "${MODELS[@]}"; do
+    RESPONSE_DIR="$SCRIPT_DIR/outputs/responses_${MODEL}"
+    JUDGE_DIR="$SCRIPT_DIR/outputs/judge_${MODEL}"
+
+    if [ ! -d "$RESPONSE_DIR" ]; then
+        echo "SKIP $MODEL — response dir not found: $RESPONSE_DIR"
+        continue
+    fi
+
+    N_FILES=$(ls "$RESPONSE_DIR"/*.jsonl 2>/dev/null | wc -l)
+    if [ "$N_FILES" -eq 0 ]; then
+        echo "SKIP $MODEL — no JSONL files in $RESPONSE_DIR"
+        continue
+    fi
+
+    echo "======================================================================"
+    echo "Judging: $MODEL ($N_FILES task files)"
+    echo "======================================================================"
+    mkdir -p "$JUDGE_DIR"
+
+    $PYTHON "$SCRIPT_DIR/run_evaluate_llm_judge.py" \
+        --response_dir  "$RESPONSE_DIR" \
+        --judge_use_api \
+        --judge_api_endpoint "$AZURE_JUDGE_ENDPOINT" \
+        --judge_api_model    "$AZURE_JUDGE_MODEL" \
+        --judge_api_key      "${AZURE_API_KEY}" \
+        --n_workers          "$N_WORKERS" \
+        --output             "$JUDGE_DIR/eval_results"
+
+    echo "Done: $MODEL → $JUDGE_DIR"
+    echo ""
+done
+
+echo "======================================================================"
+echo "All models judged."
+echo "End: $(date)"

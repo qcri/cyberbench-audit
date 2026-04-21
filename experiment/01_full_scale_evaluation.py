@@ -38,6 +38,9 @@ class ModelConfig:
     is_base: bool = False
     base_model: str = None
     description: str = ""
+    use_api: bool = False
+    api_endpoint: str = ""
+    api_style: str = "chat_completions"
 
 
 @dataclass
@@ -62,53 +65,69 @@ class EvaluationResult:
     metadata: Dict = field(default_factory=dict)
 
 
+MODELS_DIR = "/export/cyb-ai-research-data/aberriche/models"
+
 # Model configurations for full-scale evaluation
 MODELS = [
-    ModelConfig(
-        name="Llama-3.1-8B-Instruct",
-        model_path="meta-llama/Llama-3.1-8B-Instruct",
-        is_base=True,
-        description="Base instruction-tuned model (no security fine-tuning)"
-    ),
-    ModelConfig(
-        name="Llama-Primus-Merged",
-        model_path="Llama-Primus-Merged",
-        is_base=True,
-        description="TrendMicro PRIMUS model (merged, 23K cybersecurity samples)"
-    ),
-    ModelConfig(
-        name="Llama-Primus-Base",
-        model_path="Llama-Primus-Base",
-        is_base=True,
-        description="TrendMicro PRIMUS base model"
-    ),
+    # ── Security-tuned models (existing) ──────────────────────────────────────
     ModelConfig(
         name="Foundation-Sec-8B-Instruct",
-        model_path="Foundation-Sec-8B-Instruct",
+        model_path=f"{MODELS_DIR}/Foundation-Sec-8B-Instruct",
         is_base=True,
         description="Security-focused foundation model (instruct-tuned)"
     ),
     ModelConfig(
-        name="RedSage-8B-Ins",
-        model_path="RedSage-8B-Ins",
+        name="RedSage-Qwen3-8B-DPO",
+        model_path=f"{MODELS_DIR}/RedSage-Qwen3-8B-DPO",
         is_base=True,
-        description="RISys-Lab RedSage model (instruction-tuned)"
+        description="RISys-Lab RedSage model (Qwen3 backbone, DPO-aligned, thinking model)"
     ),
     ModelConfig(
-        name="RedSage-8B-DPO",
-        model_path="RedSage-8B-DPO",
+        name="Llama-Primus-Merged",
+        model_path=f"{MODELS_DIR}/Llama-Primus-Merged",
         is_base=True,
-        description="RISys-Lab RedSage model (DPO-aligned)"
+        description="TrendMicro PRIMUS model (merged, 23K cybersecurity samples)"
+    ),
+
+    # ── Proprietary / API models ───────────────────────────────────────────────
+    ModelConfig(
+        name="GPT-5.4",
+        model_path="gpt-4.1",
+        is_base=False,
+        use_api=True,
+        api_endpoint="https://qcri-cyber-cx-ai-03-eus2.openai.azure.com/openai/responses?api-version=2025-04-01-preview",
+        api_style="azure_responses",
+        description="GPT-5.4 deployed on Azure (Responses API)"
+    ),
+
+    # ── Open-source models (new) ───────────────────────────────────────────────
+    ModelConfig(
+        name="Qwen3.6-35B-A3B",
+        model_path=f"{MODELS_DIR}/Qwen3.6-35B-A3B",
+        is_base=True,
+        description="Qwen3 MoE (35B total / 3.6B active params, thinking model)"
     ),
     ModelConfig(
-        name="Fanar-1-9B-Instruct",
-        model_path="QCRI/Fanar-1-9B-Instruct",
+        name="Gemma-4-31B-it",
+        model_path=f"{MODELS_DIR}/gemma-4-31B",
         is_base=True,
-        description="Arabic-capable model for multilingual evaluation"
+        description="Google Gemma-4 31B instruction-tuned"
+    ),
+    ModelConfig(
+        name="Fanar-2-27B-Instruct",
+        model_path=f"{MODELS_DIR}/Fanar-2-27B-Instruct",
+        is_base=True,
+        description="QCRI Fanar-2 multilingual 27B model"
+    ),
+    ModelConfig(
+        name="GPT-oss-20B",
+        model_path=f"{MODELS_DIR}/gpt-oss-20b",
+        is_base=True,
+        description="OpenAI open-weight 20B model"
     ),
 ]
 
-# Task configurations - 21 tasks across 9 benchmark families
+# Task configurations - 24 tasks across 9 benchmark families
 # Note: Both CTI-Bench TAA (50 items) and AthenaBench TAA (100 items) are included
 # to compare original vs. expanded benchmark quality
 TASKS = [
@@ -119,29 +138,32 @@ TASKS = [
     TaskConfig("CTI-Bench", "ATE", samples=100),
     TaskConfig("CTI-Bench", "TAA", samples=100),  # Original: 50 items
 
-    # AthenaBench Tasks (3 tasks - includes expanded TAA)
+    # AthenaBench Tasks (6 tasks - CKT/RMS/TAA classic + ATE/RCM/VSP expanded)
     TaskConfig("AthenaBench", "CKT", samples=100),
     TaskConfig("AthenaBench", "RMS", samples=100),
-    TaskConfig("AthenaBench", "TAA", samples=100),  # Expanded: 100 items
+    TaskConfig("AthenaBench", "TAA", samples=100),      # Expanded: 100 items
+    TaskConfig("AthenaBench", "ATE-expanded", samples=100),
+    TaskConfig("AthenaBench", "RCM-compiled", samples=100),
+    TaskConfig("AthenaBench", "VSP", samples=100),
 
     # SECURE Tasks (3 tasks)
     TaskConfig("SECURE", "MAET", samples=100),
     TaskConfig("SECURE", "CWET", samples=100),
     TaskConfig("SECURE", "KCV", samples=100),
 
-    # Other Benchmarks (single task each - 4 tasks)
+    # Other Benchmarks
     TaskConfig("SecBench", "MCQ", samples=100),
     TaskConfig("CyberMetric", "MCQ", samples=100),
     TaskConfig("SecEval", "MSQ", samples=100),
     TaskConfig("CISSP", "MCQ", samples=100),
     TaskConfig("MMLU-CS", "MCQ", samples=100),
 
-    # RedSage-Bench (5 subtasks)
-    TaskConfig("RedSage-Bench", "Frameworks", samples=100),
-    TaskConfig("RedSage-Bench", "Generals", samples=100),
-    TaskConfig("RedSage-Bench", "Skills", samples=100),
-    TaskConfig("RedSage-Bench", "CLI", samples=100),
-    TaskConfig("RedSage-Bench", "Kali", samples=100),
+    # RedSage-MCQ (5 subtasks)
+    TaskConfig("RedSage-MCQ", "Frameworks", samples=100),
+    TaskConfig("RedSage-MCQ", "Generals", samples=100),
+    TaskConfig("RedSage-MCQ", "Skills", samples=100),
+    TaskConfig("RedSage-MCQ", "CLI", samples=100),
+    TaskConfig("RedSage-MCQ", "Kali", samples=100),
 ]
 
 
@@ -150,28 +172,51 @@ def run_inference_for_model(model_config: ModelConfig, subset: bool = False) -> 
     import sys
     logger.info(f"Collecting inferences for: {model_config.name}")
 
-    # Map tasks to command-line task names
-    # Note: Both cti_taa (CTI-Bench, 50 items) and taa (AthenaBench, 100 items) included
-    task_names = ["mcq", "rcm", "vsp", "ate", "cti_taa", "ckt", "rms", "taa", 
-                  "secure_maet", "secure_cwet", "secure_kcv", 
-                  "seceval", "cybermetric", "mmlu-cs", "cissp", "secbench",
-                  "redsage_frameworks", "redsage_generals", "redsage_skills", 
-                  "redsage_cli", "redsage_kali"]
-
-    cmd = [
-        sys.executable,
-        "../run_inference_benchmarks.py",
-        "--model_path", model_config.model_path,
-        "--output_dir", f"results/responses_{model_config.name.replace(' ', '_').replace('/', '-')}",
-        "--tasks"
-    ] + task_names + [
-        "--cissp_path", "../cissp.json"
+    # Map tasks to command-line task names (24 tasks across 9 benchmarks)
+    task_names = [
+        # CTI-Bench (5)
+        "mcq", "rcm", "vsp", "ate", "cti_taa",
+        # AthenaBench (6 — classic + expanded extraction tasks)
+        "ckt", "rms", "taa", "athena_ate", "athena_rcm", "athena_vsp",
+        # SECURE (3)
+        "secure_maet", "secure_cwet", "secure_kcv",
+        # Other benchmarks
+        "seceval", "cybermetric", "mmlu-cs", "secbench",
+        # RedSage-MCQ (5)
+        "redsage_frameworks", "redsage_generals", "redsage_skills",
+        "redsage_cli", "redsage_kali",
     ]
+
+    out_name = model_config.name.replace(' ', '_').replace('/', '-')
+    if model_config.use_api:
+        cmd = [
+            sys.executable,
+            "../run_inference_benchmarks.py",
+            "--use_api",
+            "--api_endpoint", model_config.api_endpoint,
+            "--api_model", model_config.model_path,
+            "--api_style", model_config.api_style,
+            "--output_dir", f"results/responses_{out_name}",
+            "--tasks",
+        ] + task_names
+        import os
+        api_key = os.environ.get("AZURE_API_KEY", "")
+        if api_key:
+            cmd.extend(["--api_key", api_key])
+    else:
+        cmd = [
+            sys.executable,
+            "../run_inference_benchmarks.py",
+            "--model_path", model_config.model_path,
+            "--use_vllm",
+            "--output_dir", f"results/responses_{out_name}",
+            "--tasks",
+        ] + task_names
 
     if model_config.base_model:
         cmd.extend(["--base_model", model_config.base_model])
 
-    if model_config.is_base:
+    if model_config.is_base and not model_config.use_api:
         cmd.append("--is_base")
 
     if subset:
@@ -194,12 +239,18 @@ def run_evaluation_for_model(model_config: ModelConfig, subset: bool = False) ->
     response_dir = f"results/responses_{model_config.name.replace(' ', '_').replace('/', '-')}"
     output_file = f"results/evaluations_{model_config.name.replace(' ', '_').replace('/', '-')}.json"
 
+    import os
+    judge = os.path.join(MODELS_DIR, "Foundation-Sec-8B-Instruct")
+    if not os.path.isdir(judge):
+        judge = "fdtn-ai/Foundation-Sec-8B-Instruct"
+
     cmd = [
         sys.executable,
         "../run_evaluate_llm_judge.py",
         "--response_dir", response_dir,
         "--output", output_file,
-        "--judge_model", "meta-llama/Llama-3.1-8B-Instruct",
+        "--judge_model", judge,
+        "--judge_use_vllm",
     ]
 
     if subset:
