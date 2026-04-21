@@ -339,11 +339,13 @@ def generate_responses_vllm(vllm_llm: "LLM", prompts: list,
         max_tokens=max_tokens,
         temperature=temperature,
         top_p=1.0,
-        # Prevent the model from generating EOS as its very first token.
-        # Gemma-4 deterministically generates immediate EOS for ~70% of KCV
-        # prompts and ~15-25% of other tasks. Forcing at least 1 output token
-        # pushes past the EOS bias and yields a valid (T/F/X or letter) answer.
-        min_tokens=1,
+        # Prevent immediate-EOS / whitespace-only responses.
+        # Gemma-4 generates EOS or a lone '\n' (stripped to '') for ~14-70% of
+        # prompts depending on task.  min_tokens=1 fixed EOS-only cases (KCV:
+        # 69%→0%) but '\n'-first cases still collapsed to '' after .strip().
+        # min_tokens=50 forces enough tokens that actual content must appear,
+        # while staying well within the max_tokens budget for all tasks.
+        min_tokens=50,
     )
     
     # Generate responses in batch
