@@ -1,0 +1,24 @@
+{
+  "model_path": "Qwen/Qwen3.6-35B-A3B",
+  "evaluation_mode": "vllm",
+  "is_base_model": false,
+  "timestamp": "2026-04-19T23:51:46.850256",
+  "tasks": [
+    "athena_vsp",
+    "secure_maet",
+    "secure_cwet",
+    "secure_kcv",
+    "seceval",
+    "cybermetric",
+    "mmlu-cs",
+    "secbench",
+    "redsage_frameworks",
+    "redsage_generals",
+    "redsage_skills",
+    "redsage_cli",
+    "redsage_kali"
+  ],
+  "max_samples": null,
+  "vllm_gpu_memory_utilization": 0.85,
+  "batch_size": 32
+}

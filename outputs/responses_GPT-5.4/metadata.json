@@ -1,0 +1,31 @@
+{
+  "model_path": "gpt-5.4",
+  "evaluation_mode": "api",
+  "is_base_model": false,
+  "timestamp": "2026-04-20T18:06:40.511880",
+  "tasks": [
+    "mcq",
+    "rcm",
+    "vsp",
+    "ate",
+    "ckt",
+    "rms",
+    "taa",
+    "athena_ate",
+    "athena_rcm",
+    "athena_vsp",
+    "secure_maet",
+    "secure_cwet",
+    "secure_kcv",
+    "seceval",
+    "cybermetric",
+    "mmlu-cs",
+    "secbench",
+    "redsage_frameworks",
+    "redsage_generals",
+    "redsage_skills",
+    "redsage_cli",
+    "redsage_kali"
+  ],
+  "max_samples": null
+}
