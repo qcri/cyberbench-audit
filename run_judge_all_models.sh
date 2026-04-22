@@ -13,7 +13,7 @@ PYTHON=/export/home/aberriche/miniconda3/envs/vllm/bin/python
 
 AZURE_JUDGE_ENDPOINT="https://qcri-cyber-cx-ai-03-eus2.openai.azure.com/"
 AZURE_JUDGE_MODEL="gpt-5.4"
-N_WORKERS="${1:-16}"
+N_WORKERS="${1:-12}"
 
 # Load API key from .env if not already in environment
 if [ -z "${AZURE_API_KEY:-}" ] && [ -f "$SCRIPT_DIR/.env" ]; then
@@ -34,11 +34,15 @@ echo ""
 
 # Models with complete (or near-complete) response data
 MODELS=(
-    "Llama-Primus-Merged"
+    "Fanar-2-27B-Instruct"
     "Foundation-Sec-8B-Instruct"
+    "GPT-oss-20B"
+    "Llama-Primus-Merged"
     "RedSage-Qwen3-8B-DPO"
     "Qwen3.6-35B-A3B"
     "Gemma-4-31B-it"
+    "Llama-Primus-Nemotron-70B-Instruct"
+    "Llama-3.3-70B-Instruct"
 )
 
 for MODEL in "${MODELS[@]}"; do

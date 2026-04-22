@@ -109,16 +109,20 @@ def load_model_and_tokenizer(model_path: str, base_model: str = None, is_base: b
 
 def chat_completion_api(endpoint: str, model_name: str, prompt: str,
                        api_key: str = "", max_tokens: int = 1024,
-                       temperature: float = 0.1, retries: int = 3,
+                       temperature: float = 0.1, retries: int = 5,
                        api_version: str = "2024-12-01-preview",
-                       messages: list = None) -> str:
+                       messages: list = None,
+                       http_timeout: float = 60.0) -> str:
     """Call Azure OpenAI chat completions API using the official SDK."""
-    from openai import AzureOpenAI
+    import random
+    from openai import AzureOpenAI, RateLimitError, APITimeoutError
 
     client = AzureOpenAI(
         api_version=api_version,
         azure_endpoint=endpoint,
         api_key=api_key,
+        timeout=http_timeout,
+        max_retries=0,
     )
 
     if messages is None:
@@ -133,10 +137,19 @@ def chat_completion_api(endpoint: str, model_name: str, prompt: str,
                 temperature=temperature,
             )
             return (response.choices[0].message.content or "").strip()
+        except RateLimitError as e:
+            wait = 45 + random.uniform(0, 15)
+            print(f"Rate-limited (attempt {attempt+1}/{retries}), sleeping {wait:.1f}s: {e}")
+            time.sleep(wait)
+        except APITimeoutError as e:
+            wait = 10 + random.uniform(0, 10)
+            print(f"Timeout (attempt {attempt+1}/{retries}), sleeping {wait:.1f}s: {e}")
+            time.sleep(wait)
         except Exception as e:
+            wait = 2 ** attempt + random.uniform(0, 2)
             if attempt < retries - 1:
-                print(f"API call failed (attempt {attempt+1}/{retries}): {e}")
-                time.sleep(2 ** attempt)
+                print(f"API error (attempt {attempt+1}/{retries}), sleeping {wait:.1f}s: {e}")
+                time.sleep(wait)
             else:
                 print(f"API call failed after {retries} attempts: {e}")
     return "ERROR: exhausted retries"
