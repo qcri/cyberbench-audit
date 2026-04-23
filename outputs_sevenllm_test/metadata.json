@@ -1,0 +1,10 @@
+{
+  "model_path": "meta-llama/Llama-3.1-8B-Instruct",
+  "evaluation_mode": "local",
+  "is_base_model": false,
+  "timestamp": "2026-04-15T21:37:30.823487",
+  "tasks": [
+    "sevenllm"
+  ],
+  "max_samples": 10
+}
