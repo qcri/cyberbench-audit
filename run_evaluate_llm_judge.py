@@ -429,16 +429,13 @@ def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
 
             score = max(1, min(5, int(numeric_score)))
             reason = parsed.get("reason", "No reason provided")
-            # Consider score >= 4 as "correct" for accuracy metrics
-            is_correct = score >= 4
             return {
-                "is_correct": is_correct,
                 "score": score,
                 "reason": reason,
                 "judge_response": judge_response,
                 "justification": reason
             }
-        
+
         is_correct = verdict == "CORRECT"
         
         return {
@@ -477,11 +474,10 @@ def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
             else:
                 # Fallback: look for any digit 1-5
                 digits = re.findall(r'\b([1-5])\b', judge_response)
-                score = int(digits[0]) if digits else 3  # Default to 3 (usable)
+                score = int(digits[0]) if digits else 3
+
             score = max(1, min(5, score))
-            is_correct = score >= 4
             return {
-                "is_correct": is_correct,
                 "score": score,
                 "reason": "Fallback parsing - JSON parse failed",
                 "judge_response": judge_response,
@@ -689,6 +685,7 @@ def evaluate_with_judge(model, tokenizer, dataset, task_type: str,
     detailed_results = []
     mad_scores = []  # For VSP MAD calculation
     extraction_success_count = 0  # For VSP extraction tracking
+    sevenllm_scores = [] # For SEvenLLM numeric scores (1-5) tracking
     
     # For ATE metrics (P/R/F1)
     tp_total = 0
@@ -778,13 +775,18 @@ def evaluate_with_judge(model, tokenizer, dataset, task_type: str,
                 }
                 detailed_results.append(result)
         else:
-            # For classification tasks: count correct/incorrect
-            is_correct = judge_result['is_correct']
-            
-            if is_correct:
-                correct += 1
-            
-            total += 1
+            if task_type == "sevenllm":
+                score = judge_result["score"]
+                sevenllm_scores.append(score)
+                total += 1
+            else:
+                # For classification tasks: count correct/incorrect
+                is_correct = judge_result['is_correct']
+
+                if is_correct:
+                    correct += 1
+
+                total += 1
             
             # For ATE: extract techniques and calculate precision/recall/F1
             if task_type == "ate":
@@ -827,11 +829,14 @@ def evaluate_with_judge(model, tokenizer, dataset, task_type: str,
                         "model_response": response,
                         "judge_response": judge_result['judge_response'],
                         "judge_justification": judge_result.get('justification', ''),
-                        "is_correct": is_correct
                     }
-                    # Add score for sevenllm (1-5 scale)
-                    if 'score' in judge_result:
-                        result['score'] = judge_result['score']
+
+                    if task_type == "sevenllm":
+                        result["score"] = judge_result["score"]
+                        result["reason"] = judge_result.get("reason", "")
+                    else:
+                        result["is_correct"] = is_correct
+
                     detailed_results.append(result)
     
     # Calculate metrics based on task type
@@ -869,6 +874,14 @@ def evaluate_with_judge(model, tokenizer, dataset, task_type: str,
             "tp_total": tp_total,
             "fp_total": fp_total,
             "fn_total": fn_total
+        }
+    elif task_type == "sevenllm":
+        mean_score = sum(sevenllm_scores) / len(sevenllm_scores) if sevenllm_scores else 0.0
+        results = {
+            "mean_score": round(mean_score, 4),
+            "total": total,
+            "score_sum": sum(sevenllm_scores),
+            "scores_collected": len(sevenllm_scores),
         }
     else:
         # Classification tasks use accuracy
@@ -915,6 +928,7 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
     detailed_results = []
     mad_scores = []
     extraction_success_count = 0
+    sevenllm_scores = []
     
     # For ATE metrics (P/R/F1)
     tp_total = 0
@@ -980,12 +994,17 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
                 }
                 detailed_results.append(result)
         else:
-            is_correct = judge_result['is_correct']
-            
-            if is_correct:
-                correct += 1
-            
-            total += 1
+            if task_type == "sevenllm":
+                score = judge_result["score"]
+                sevenllm_scores.append(score)
+                total += 1
+            else:
+                is_correct = judge_result['is_correct']
+
+                if is_correct:
+                    correct += 1
+
+                total += 1
             
             # For ATE: extract techniques and calculate precision/recall/F1
             if task_type == "ate":
@@ -1028,11 +1047,14 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
                         "model_response": response,
                         "judge_response": judge_result['judge_response'],
                         "judge_justification": judge_result.get('justification', ''),
-                        "is_correct": is_correct
                     }
-                    # Add score for sevenllm (1-5 scale)
-                    if 'score' in judge_result:
-                        result['score'] = judge_result['score']
+
+                    if task_type == "sevenllm":
+                        result["score"] = judge_result["score"]
+                        result["reason"] = judge_result.get("reason", "")
+                    else:
+                        result["is_correct"] = is_correct
+
                     detailed_results.append(result)
     
     # Calculate metrics
@@ -1061,6 +1083,14 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
             "tp_total": tp_total,
             "fp_total": fp_total,
             "fn_total": fn_total
+        }
+    elif task_type == "sevenllm":
+        mean_score = sum(sevenllm_scores) / len(sevenllm_scores) if sevenllm_scores else 0.0
+        results = {
+            "mean_score": round(mean_score, 4),
+            "total": total,
+            "score_sum": sum(sevenllm_scores),
+            "scores_collected": len(sevenllm_scores),
         }
     else:
         accuracy = correct / total if total > 0 else 0.0
@@ -1134,45 +1164,57 @@ def generate_summary_from_detailed(detailed_dir: str) -> Dict[str, Any]:
         "total_correct": 0,
         "total_samples": 0
     }
-    
+
     # Process each task file
     detailed_path = Path(detailed_dir)
+    sevenllm_task_means = []
+    
     for f in sorted(detailed_path.glob('*_detailed.jsonl')):
         task = f.stem.replace('_detailed', '')
         content = f.read_text()
         objects = parse_concatenated_json(content)
-        
+
         if not objects:
             continue
-        
-        # Calculate metrics
+
         total = len(objects)
+
+        # SEVENLLM-style scored tasks
+        if all("score" in obj for obj in objects):
+            scores = [obj.get("score", 0) for obj in objects]
+            mean_score = sum(scores) / len(scores) if scores else 0.0
+
+            task_metrics = {
+                "mean_score": mean_score,
+                "score_sum": sum(scores),
+                "total": total
+            }
+
+            summary["tasks"][task.upper()] = task_metrics
+            sevenllm_task_means.append(mean_score)
+            continue
+
+        # Standard accuracy-style tasks
         correct = sum(1 for obj in objects if obj.get('is_correct'))
-        
+
         task_metrics = {
             'accuracy': correct / total if total > 0 else 0,
             'correct': correct,
             'total': total
         }
-        
-        # Add precision/recall/f1 if present
-        if objects and 'precision' in objects[0]:
-            precisions = [obj.get('precision', 0) for obj in objects]
-            recalls = [obj.get('recall', 0) for obj in objects]
-            f1_scores = [obj.get('f1', 0) for obj in objects]
-            
-            task_metrics['avg_precision'] = sum(precisions) / len(precisions) if precisions else 0
-            task_metrics['avg_recall'] = sum(recalls) / len(recalls) if recalls else 0
-            task_metrics['avg_f1'] = sum(f1_scores) / len(f1_scores) if f1_scores else 0
-        
+
         summary['tasks'][task.upper()] = task_metrics
         summary['total_correct'] += correct
         summary['total_samples'] += total
-    
-    # Calculate overall accuracy
-    summary['overall_accuracy'] = (summary['total_correct'] / summary['total_samples'] 
-                                   if summary['total_samples'] > 0 else 0)
-    
+
+    summary['overall_accuracy'] = (
+        summary['total_correct'] / summary['total_samples']
+        if summary['total_samples'] > 0 else 0
+    )
+
+    if sevenllm_task_means:
+        summary["sevenllm_mean_score"] = sum(sevenllm_task_means) / len(sevenllm_task_means)
+
     return summary
 
 
@@ -1547,6 +1589,9 @@ def main():
             print(f"  Precision: {task_results['precision']:.4f}")
             print(f"  Recall: {task_results['recall']:.4f}")
             print(f"  F1: {task_results['f1']:.4f}")
+        elif "mean_score" in task_results:
+            print(f"  Mean Score: {task_results['mean_score']:.4f}")
+            print(f"  Total: {task_results['total']}")
         else:
             # Classification tasks
             print(f"  Accuracy: {task_results['accuracy']:.4f}")

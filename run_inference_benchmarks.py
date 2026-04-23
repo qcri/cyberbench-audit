@@ -196,7 +196,7 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
                      use_api: bool = False, use_vllm: bool = False, vllm_model=None,
                      api_endpoint: str = None, api_model: str = None, api_key: str = "",
                      batch_size: int = None, system_prompt: str = None,
-                     messages: list = None, **kwargs) -> str:
+                     messages: list = None, task_name: str = None, **kwargs) -> str:
     """Generate response using local inference, vLLM, or API
 
     Args:
@@ -204,6 +204,53 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
         system_prompt: Optional system instruction for chat-style models
         **kwargs: Ignored additional parameters for compatibility
     """
+
+    # SEVENLLM path: use raw prompt directly
+    if task_name == "sevenllm":
+        if use_api:
+            return chat_completion_api(
+                api_endpoint,
+                api_model,
+                prompt=prompt,
+                api_key=api_key,
+                max_tokens=max_new_tokens,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+        if use_vllm and vllm_model:
+            sampling_params = SamplingParams(
+                max_tokens=max_new_tokens,
+                temperature=0.0,
+                top_p=1.0,
+            )
+            outputs = vllm_model.generate([prompt], sampling_params)
+            return outputs[0].outputs[0].text.strip()
+
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=4096,
+        )
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+
+        response = tokenizer.decode(
+            outputs[0][inputs["input_ids"].shape[1]:],
+            skip_special_tokens=True
+        )
+        return response.strip()
+
     if messages is None:
         messages = []
         if system_prompt:
@@ -881,7 +928,7 @@ def collect_sevenllm(model, tokenizer, output_file: str, max_samples: int = None
             )
 
         # Generate response
-        response = generate_response(model, tokenizer, prompt, max_new_tokens=2048, **api_kwargs)
+        response = generate_response(model, tokenizer, prompt, max_new_tokens=2048, task_name="sevenllm", **api_kwargs)
         
         # Handle ground_truth - it may be dict or string
         if isinstance(ground_truth, dict):
