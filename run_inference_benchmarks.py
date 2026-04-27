@@ -20,9 +20,29 @@ import json
 import torch
 import requests
 import argparse
+import re
 from tqdm import tqdm
 from datasets import load_dataset, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+SEVENLLM_PROMPT_DICT = {
+    "prompt_input": (
+        "Below is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
+    ),
+    "prompt_input_qwen": (
+        "<|im_start|>user\nBelow is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Input:\n{input}### Response:<|im_end|>\n<|im_start|>assistant\n"
+    ),
+    "prompt_no_input": (
+        "Below is an instruction that describes a task. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Response:"
+    ),
+}
 
 # Optional peft import for LoRA adapter support
 try:
@@ -74,6 +94,8 @@ def get_task_type(task_name: str) -> str:
         "rms": "rms",  # Risk mitigation strategies
         "taa": "taa",  # Threat actor attribution (AthenaBench)
         "cti_taa": "taa",  # Threat actor attribution (CTI-Bench)
+        # SEvenLLM-Bench tasks (structured JSON extraction)
+        "sevenllm": "sevenllm",  # Multi-category CTI extraction tasks
     }
     return task_type_map.get(task_name, "mcq")  # Default to MCQ
 
@@ -174,7 +196,7 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
                      use_api: bool = False, use_vllm: bool = False, vllm_model=None,
                      api_endpoint: str = None, api_model: str = None, api_key: str = "",
                      batch_size: int = None, system_prompt: str = None,
-                     messages: list = None, **kwargs) -> str:
+                     messages: list = None, task_name: str = None, **kwargs) -> str:
     """Generate response using local inference, vLLM, or API
 
     Args:
@@ -182,6 +204,53 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
         system_prompt: Optional system instruction for chat-style models
         **kwargs: Ignored additional parameters for compatibility
     """
+
+    # SEVENLLM path: use raw prompt directly
+    if task_name == "sevenllm":
+        if use_api:
+            return chat_completion_api(
+                api_endpoint,
+                api_model,
+                prompt=prompt,
+                api_key=api_key,
+                max_tokens=max_new_tokens,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+        if use_vllm and vllm_model:
+            sampling_params = SamplingParams(
+                max_tokens=max_new_tokens,
+                temperature=0.0,
+                top_p=1.0,
+            )
+            outputs = vllm_model.generate([prompt], sampling_params)
+            return outputs[0].outputs[0].text.strip()
+
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=4096,
+        )
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+
+        response = tokenizer.decode(
+            outputs[0][inputs["input_ids"].shape[1]:],
+            skip_special_tokens=True
+        )
+        return response.strip()
+
     if messages is None:
         messages = []
         if system_prompt:
@@ -782,6 +851,130 @@ def collect_cissp(model, tokenizer, output_file: str, dataset_path: str = None,
     return len(results)
 
 
+def is_non_chinese_sample(text: str) -> bool:
+    """Check if text contains no Chinese characters.
+    
+    Note: This only filters out Chinese text; it does not verify the text is English.
+    Used for SEvenLLM-Bench which is specifically bilingual (EN/ZH).
+    """
+    import re
+    # Chinese Unicode ranges: CJK Unified Ideographs
+    chinese_pattern = re.compile(r'[\u4e00-\u9fff]')
+    return not bool(chinese_pattern.search(text))
+
+
+def collect_sevenllm(model, tokenizer, output_file: str, max_samples: int = None, **api_kwargs):
+    """Collect responses from SEvenLLM-Bench (English samples only).
+    
+    SEvenLLM-Bench is a structured extraction benchmark with 24 cybersecurity task categories.
+    This function filters to English-only samples (650 out of 1300 total) based on the input field.
+    
+    Dataset: Multilingual-Multimodal-NLP/SEVENLLM-Dataset on HuggingFace
+    """
+    from huggingface_hub import hf_hub_download
+    
+    print(f"\n{'='*70}")
+    print("Collecting SEVENLLM responses (English filtered)")
+    print("Dataset: Multilingual-Multimodal-NLP/SEVENLLM-Dataset")
+    print(f"{'='*70}")
+    
+    # Download and load dataset manually (HF auto-loader fails due to mixed output types)
+    file_path = hf_hub_download(
+        repo_id='Multilingual-Multimodal-NLP/SEVENLLM-Dataset',
+        filename='test.jsonl',
+        repo_type='dataset'
+    )
+    
+    samples = []
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                samples.append(json.loads(line))
+    
+    print(f"Total samples in dataset: {len(samples)}")
+    
+    # Filter to non-Chinese samples based on INPUT field (not instruction)
+    # The dataset has 650 samples with English input and 650 with Chinese input
+    english_samples = [s for s in samples if is_non_chinese_sample(s.get('input', ''))]
+    
+    print(f"Non-Chinese samples: {len(english_samples)}")
+    
+    if max_samples:
+        english_samples = english_samples[:max_samples]
+    
+    print(f"Samples to process: {len(english_samples)}")
+    
+    # Collect responses
+    results = []
+    for idx, sample in enumerate(tqdm(english_samples, desc="Collecting SEVENLLM")):
+        instruction = sample.get('instruction', '')
+        input_text = sample.get('input', '')
+        ground_truth = sample.get('output', '')
+        category = sample.get('category', 'unknown')
+        
+        # Format prompt using SEvenLLM's native format: instruction + input
+        # This matches their training and evaluation approach
+        # Format prompt to mirror the original SEvenLLM inference script
+        tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+        if "qwen" in tokenizer_name:
+            prompt = SEVENLLM_PROMPT_DICT["prompt_input_qwen"].format(
+                instruction=instruction,
+                input=input_text,
+            )
+        else:
+            prompt = SEVENLLM_PROMPT_DICT["prompt_input"].format(
+                instruction=instruction,
+                input=input_text,
+            )
+
+        # Generate response
+        response = generate_response(model, tokenizer, prompt, max_new_tokens=2048, task_name="sevenllm", **api_kwargs)
+        
+        # Handle ground_truth - it may be dict or string
+        if isinstance(ground_truth, dict):
+            ground_truth = json.dumps(ground_truth)
+        else:
+            ground_truth = str(ground_truth)
+        
+        # Store raw result
+        # Include input_text in metadata for SEvenLLM's evaluation prompt format
+        result = {
+            "task": "sevenllm",
+            "index": idx,
+            "prompt": prompt,
+            "ground_truth": ground_truth,
+            "model_response": response,
+            "metadata": {
+                "dataset": "Multilingual-Multimodal-NLP/SEVENLLM-Dataset",
+                "category": category,
+                "instruction": instruction,
+                "input": input_text,  # Cybersecurity incident content for judge context
+                "task_type": "sevenllm"  # Structured JSON extraction
+            }
+        }
+        results.append(result)
+    
+    # Save to JSONL
+    with open(output_file, 'w') as f:
+        for result in results:
+            f.write(json.dumps(result) + '\n')
+    
+    print(f"✓ Saved {len(results)} responses to: {output_file}")
+    
+    # Print category distribution
+    category_counts = {}
+    for r in results:
+        cat = r['metadata']['category']
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+    print(f"\nCategory distribution ({len(category_counts)} categories):")
+    for cat, count in sorted(category_counts.items(), key=lambda x: -x[1])[:10]:
+        print(f"  {cat}: {count}")
+    if len(category_counts) > 10:
+        print(f"  ... and {len(category_counts) - 10} more categories")
+    
+    return len(results)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Collect raw benchmark responses without evaluation")
     
@@ -806,7 +999,7 @@ def main():
     
     # Collection options
     parser.add_argument("--tasks", nargs="+", default=["mcq", "rcm", "vsp", "ate"], 
-                       help="Tasks to collect: mcq, rcm, vsp, ate, cti_taa, ckt, rms, taa, mmlu-cs, secure_maet, secure_cwet, secure_kcv, secbench, redsage_frameworks, redsage_generals, redsage_skills, redsage_cli, redsage_kali, cybermetric, seceval, cissp. Note: cti_taa is CTI-Bench TAA (50 items), taa is AthenaBench TAA (100 items)")
+                       help="Tasks to collect: mcq, rcm, vsp, ate, cti_taa, ckt, rms, taa, mmlu-cs, secure_maet, secure_cwet, secure_kcv, secbench, redsage_frameworks, redsage_generals, redsage_skills, redsage_cli, redsage_kali, cybermetric, seceval, cissp, sevenllm. Note: cti_taa is CTI-Bench TAA (50 items), taa is AthenaBench TAA (100 items), sevenllm is SEvenLLM-Bench English samples (650 items)")
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory for JSONL files")
     parser.add_argument("--max_samples", type=int, default=None, help="Limit samples per task (for testing)")
     
@@ -945,6 +1138,9 @@ def main():
             elif task_name == "cissp":
                 count = collect_cissp(model, tokenizer, output_file, args.cissp_path,
                                      args.max_samples, **api_kwargs)
+            elif task_name == "sevenllm":
+                count = collect_sevenllm(model, tokenizer, output_file,
+                                        args.max_samples, **api_kwargs)
             else:
                 print(f"Unknown task: {task_name}, skipping...")
                 continue

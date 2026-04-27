@@ -84,3 +84,4 @@ model_comparison_table.csv
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+/.history
