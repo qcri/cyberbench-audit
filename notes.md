@@ -17,4 +17,4 @@
     - validation of classification based on random sampling and manual labeling [ask everyone to help]
 6- [] exp #3: evaluating how model-specific inference prompt affects (one) benchmark results
 7- [] exp #4: evaluating how language affects benchmarking results (translate en to ar and evaluate)
-8- [] exp #5: 
+8- [] exp #5: correlation analysis between benchmarks (pearson, kendall..etc)
