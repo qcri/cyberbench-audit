@@ -47,7 +47,9 @@ env/
 .ipynb_checkpoints
 *.ipynb
 
-# Output directories
+# Output directories — outputs/ is a symlink to /export/cyb-ai-research-data/aberriche/BenchBench-outputs
+outputs
+outputs/
 outputs_*/
 
 # SLURM (scripts and logs are environment-specific)
