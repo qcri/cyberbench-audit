@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
 """
-Collect raw LLM responses from cybersecurity benchmarks without evaluation.
-Responses are saved in JSONL format for later evaluation (regex or LLM judge).
+Collect model outputs from cybersecurity benchmark tasks in a benchmark-faithful format.
 
-Supported benchmarks:
+This script focuses on response collection, not final benchmark aggregation. For most
+tasks, it saves raw model responses to JSONL so that benchmark-specific evaluators
+(regex, exact match, LLM judge, or custom scoring scripts) can run later.
+
+Some tasks also include local-HF scoring-style collection modes when the original
+benchmark relies on log-likelihood rather than generated text. For example,
+mmlu-cs-logprobs computes answer-choice logprobs locally to better mirror the
+original MMLU evaluation.
+
+Supported benchmark families:
 - CTI-Bench original TSVs: MCQ, RCM, RCM-2021, VSP, ATE, TAA
 - AthenaBench original JSONL: CKT, ATE, RCM, RMS, VSP, TAA
 - SECURE original TSVs: MAET, CWET, KCV
 - SecEval official chat few-shot mode
 - CyberMetric-500 original evaluator prompt
-- MMLU Computer Security
-- MMLU Computer Security: generation mode and local-HF logprob mode
-- SecBench
-- RedSageMCQ: 5 subsets (Frameworks, Generals, Skills, CLI, Kali)
-- CISSP
+- MMLU Computer Security:
+  - mmlu-cs: original 5-shot prompt with generated response collection
+  - mmlu-cs-logprobs: local-HF official-style logprob scoring
+- SecBench MCQ original data with reconstructed prompt
+- RedSageMCQ five subsets using RedSage cybersec_prompt_fn-style generation
+- CISSP custom/local dataset collection
 """
 
 import os
@@ -48,9 +57,7 @@ except ImportError:
 # ---------------------------------------------------------------------
 # MMLU helpers
 # ---------------------------------------------------------------------
-
 MMLU_CHOICES = ["A", "B", "C", "D"]
-
 
 def format_mmlu_subject(subject: str) -> str:
     # Faithful to original MMLU format_subject():
@@ -162,7 +169,71 @@ def score_mmlu_next_token_local(model, tokenizer, prompt: str):
         "token_info": token_info,
     }
 
+# ---------------------------------------------------------------------
+# RedSageMCQ helpers
+# ---------------------------------------------------------------------
+REDSAGE_CHOICES = ["A", "B", "C", "D"]
 
+def build_redsage_prompt(sample: dict, include_context: bool = False) -> str:
+    """
+    Build the RedSageMCQ prompt using the RedSage cybersec_prompt_fn layout.
+
+    RedSageMCQTask defaults to include_context=False for the released five MCQ
+    subsets, so this function does not include the row's content field unless
+    explicitly requested.
+
+    This prompt is used by both RedSage's default loglikelihood tasks and its
+    _em generative tasks. This script currently uses it for _em-style response
+    collection.
+    """
+    content = sample.get("content", "")
+    question = sample["question"]
+    answers_dict = sample["answers"]
+
+    query_parts = []
+
+    if include_context and content:
+        query_parts.append("Context: " + content)
+
+    query_parts.append("Question: " + question)
+
+    choices_str_parts = []
+    for letter in REDSAGE_CHOICES:
+        choice_text = answers_dict.get(letter)
+        if choice_text is None:
+            raise ValueError(f"Missing answer for choice {letter} in sample: {sample}")
+        choices_str_parts.append(f"{letter}. {choice_text}")
+
+    instructions = "You are given multiple choice questions. Answer with the option letter (A, B, C, D) from the given choices directly."
+
+    return (
+        instructions
+        + "\n"
+        + "\n\n".join(query_parts)
+        + "\n"
+        + "\n".join(choices_str_parts)
+        + "\nAnswer:"
+    )
+
+
+def redsage_answer_letter(answer_val):
+    return str(answer_val).strip().upper()
+
+
+def apply_stop_sequence(text: str, stop_sequence=None) -> str:
+    if not stop_sequence:
+        return text
+
+    earliest = None
+    for stop in stop_sequence:
+        pos = text.find(stop)
+        if pos != -1 and (earliest is None or pos < earliest):
+            earliest = pos
+
+    if earliest is None:
+        return text
+
+    return text[:earliest].strip()
 
 # Helpers:
 def load_json_dataset(source: str):
@@ -174,13 +245,37 @@ def load_json_dataset(source: str):
     with open(source, "r", encoding="utf-8") as f:
         return json.load(f)
     
+def load_concatenated_json_objects(source: str) -> list:
+    """Load SecBench-style data where JSON objects may be newline-separated or concatenated."""
+    if source.startswith("http://") or source.startswith("https://"):
+        response = requests.get(source, timeout=30)
+        response.raise_for_status()
+        text = response.text
+    else:
+        with open(source, "r", encoding="utf-8") as f:
+            text = f.read()
+
+    decoder = json.JSONDecoder()
+    idx = 0
+    data = []
+
+    while idx < len(text):
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
+        if idx >= len(text):
+            break
+
+        obj, end = decoder.raw_decode(text, idx)
+        data.append(obj)
+        idx = end
+
+    return data    
 
 #To load TSV datasets (for CTI-Bench)
 def load_tsv_dataset(source: str) -> Dataset:
     if source.startswith("http://") or source.startswith("https://"):
         response = requests.get(source, timeout=30)
         response.raise_for_status()
-        from io import StringIO
         df = pd.read_csv(StringIO(response.text), sep="\t", encoding="utf-8")
     else:
         df = pd.read_csv(source, sep="\t", encoding="utf-8")
@@ -545,7 +640,14 @@ def load_jsonl_dataset(source: str) -> Dataset:
 def collect_huggingface_benchmark(task_name: str, dataset_name: str, subset_name: str, 
                                   model, tokenizer, output_file: str, max_samples: int = None,
                                   **api_kwargs):
-    """Collect responses from HuggingFace datasets (CTI-Bench, MMLU-CS, SECURE, SecBench, RedSageMCQ)"""
+    """Generic HuggingFace dataset collector.
+
+    This is a fallback collector for HF-hosted MCQ-style datasets that do not yet have
+    a benchmark-specific prompt/evaluation implementation in this script.
+
+    Do not use this for tasks where we have implemented a faithful collector, such as
+    MMLU, RedSageMCQ, SECURE, CTI-Bench, or SecBench.
+    """
     print(f"\n{'='*70}")
     print(f"Collecting {task_name.upper()} responses")
     print(f"Dataset: {dataset_name}/{subset_name}")
@@ -1332,7 +1434,6 @@ def collect_cybermetric(model, tokenizer, output_file: str, max_samples: int = N
             prompt,
             system_prompt=system_prompt,
             # Original CyberMetric evaluator does not specify max_tokens/temperature.
-            # Keep short because the expected output is only ANSWER: X.
             temperature=0.0,
             max_new_tokens=1024,
             **api_kwargs,
@@ -1373,7 +1474,196 @@ def collect_cybermetric(model, tokenizer, output_file: str, max_samples: int = N
 
     print(f"✓ Saved {len(results)} responses to: {output_file}")
     return len(results)
+
+def collect_secbench_mcq(task_name: str, dataset_url: str,
+                         model, tokenizer, output_file: str,
+                         max_samples: int = None, **api_kwargs):
+    """Collect SecBench MCQ responses from the original released GitHub data.
+
+    SecBench paper/repo do not provide an exact inference prompt template.
+    This uses a reconstructed MCQ prompt from released fields and preserves
+    the paper's exact-match MCQ scoring assumption in metadata.
+    """
+    print(f"\n{'='*70}")
+    print(f"Collecting {task_name.upper()} responses")
+    print(f"Source: {dataset_url}")
+    print(f"{'='*70}")
+
+    samples = load_concatenated_json_objects(dataset_url)
+
+    # Match previous HF config intent: English MCQs only.
+    samples = [s for s in samples if s.get("language") == "English"]
+
+    if max_samples:
+        samples = samples[:max_samples]
+
+    print(f"Total samples: {len(samples)}")
+
+    results = []
+
+    for idx, sample in enumerate(tqdm(samples, desc=f"Collecting {task_name.upper()}")):
+        question = str(sample.get("question", "") or "").strip()
+        answers = sample.get("answers", [])
+        ground_truth = str(sample.get("label", "") or "").strip()
+
+        if not question or not answers or not ground_truth:
+            continue
+
+        prompt = (
+            "Answer the following multiple-choice cybersecurity question. "
+            "Select the correct option letter(s) from A, B, C, and D. "
+            "Return only the letter(s), with no explanation.\n\n"
+        )
+        prompt += question + "\n"
+
+        for i, answer in enumerate(answers[:4]):
+            prompt += f"{chr(65 + i)}. {answer}\n"
+
+        prompt += "Answer:"
+
+        response = generate_response(
+            model,
+            tokenizer,
+            prompt,
+            max_new_tokens=16,
+            temperature=0.0,
+            **api_kwargs,
+        )
+
+        result = {
+            "task": task_name,
+            "index": idx,
+            "prompt": prompt,
+            "ground_truth": ground_truth,
+            "model_response": response,
+            "metadata": {
+                "dataset": "secbench-git/SecBench",
+                "source": dataset_url,
+                "sample_id": idx,
+                "task_type": "mcq",
+                "prompt_mode": "reconstructed_from_released_fields",
+                "official_prompt_available": False,
+                "official_inference_script": None,
+                "official_eval_framework": "OpenCompass",
+                "official_mcq_scoring": (
+                    "Exact match between model's selected letter(s) and label. "
+                    "For multi-answer MCQs, incomplete or extra selections receive no credit."
+                ),
+                "generation_params": {
+                    "temperature": 0.0,
+                    "max_new_tokens": 16,
+                    "note": (
+                        "SecBench paper/repo do not specify generation parameters; "
+                        "capped because MCQ expects A/B/C/D letter output."
+                    ),
+                },
+                "question": question,
+                "choices": answers,
+                "language": sample.get("language", ""),
+                "ability": sample.get("ability", ""),
+                "level": sample.get("level", ""),
+                "domain": sample.get("domain", ""),
+                "original_fields": sample,
+            },
+        }
+        results.append(result)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+    print(f"✓ Saved {len(results)} SecBench MCQ responses to: {output_file}")
+    return len(results)
     
+
+def collect_redsage_mcq_generation(task_name: str, dataset_name: str, subset_name: str,
+                                   model, tokenizer, output_file: str,
+                                   max_samples: int = None, **api_kwargs):
+    """Collect RedSageMCQ responses using RedSage _em-style generation.
+
+    Faithful pieces:
+    - same RedSage cybersec_prompt_fn layout
+    - include_context=False
+    - generation_size=100
+    - stop_sequence=["\\n"] applied after generation
+    """
+    print(f"\n{'='*70}")
+    print(f"Collecting {task_name.upper()} RedSageMCQ responses")
+    print(f"Dataset: {dataset_name}/{subset_name}")
+    print(f"{'='*70}")
+
+    dataset = load_dataset(dataset_name, subset_name, split="test")
+
+    if max_samples:
+        dataset = dataset.select(range(min(max_samples, len(dataset))))
+
+    print(f"Total samples: {len(dataset)}")
+
+    results = []
+
+    for idx, sample in enumerate(tqdm(dataset, desc=f"Collecting {task_name.upper()}")):
+        sample = dict(sample)
+
+        prompt = build_redsage_prompt(sample, include_context=False)
+        ground_truth = redsage_answer_letter(sample["solution"])
+
+        raw_response = generate_response(
+            model,
+            tokenizer,
+            prompt,
+            max_new_tokens=100,
+            temperature=0.0,
+            **api_kwargs,
+        )
+
+        response = apply_stop_sequence(raw_response, stop_sequence=["\n"])
+
+        result = {
+            "task": task_name,
+            "index": idx,
+            "prompt": prompt,
+            "ground_truth": ground_truth,
+            "model_response": response,
+            "metadata": {
+                "dataset": dataset_name,
+                "subset": subset_name,
+                "sample_id": idx,
+                "task_type": "mcq",
+                "prompt_mode": "redsage_cybersec_prompt_fn_include_context_false",
+                "official_inference_script": "RISys-Lab/RedSage eval/cybersecurity_benchmarks.py",
+                "official_prompt_function": "cybersec_prompt_fn",
+                "include_context": False,
+                "collector_mode": "generative_em_style",
+                "official_default_metric": "loglikelihood_acc",
+                "official_em_metrics": [
+                    "exact_match",
+                    "prefix_exact_match",
+                    "regex_mcq_acc"
+                ],
+                "generation_params": {
+                    "temperature": 0.0,
+                    "max_new_tokens": 100,
+                    "official_em_generation_size": 100,
+                    "official_em_stop_sequence": ["\\n"],
+                    "stop_sequence_applied_post_generation": True,
+                },
+                "raw_model_response_before_stop": raw_response,
+                "question": sample.get("question", ""),
+                "choices": sample.get("answers", {}),
+                "content_preserved_but_not_prompted": sample.get("content", ""),
+                "original_fields": sample,
+            },
+        }
+        results.append(result)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+    print(f"✓ Saved {len(results)} RedSageMCQ responses to: {output_file}")
+    return len(results)
+
+
 def collect_cissp(model, tokenizer, output_file: str, dataset_path: str = None,
                  max_samples: int = None, **api_kwargs):
     """Collect responses from CISSP"""
@@ -1609,14 +1899,14 @@ def main():
         "secure_maet": ("secure_tsv", "https://raw.githubusercontent.com/aiforsec/SECURE/main/Dataset/SECURE%20-%20MAET.tsv", "secure_maet"),
         "secure_cwet": ("secure_tsv", "https://raw.githubusercontent.com/aiforsec/SECURE/main/Dataset/SECURE%20-%20CWET.tsv", "secure_cwet"),
         "secure_kcv": ("secure_tsv", "https://raw.githubusercontent.com/aiforsec/SECURE/main/Dataset/SECURE%20-%20KCV.tsv", "secure_kcv"),
-        "secbench": ("hf", "RISys-Lab/Benchmarks_CyberSec_SecBench", "MCQs_English"),
+        "secbench": ("secbench_mcq", "https://raw.githubusercontent.com/secbench-git/SecBench/main/data/MCQs_2730.jsonl", "secbench"),
 
         # RedSageMCQ
-        "redsage_frameworks": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_knowledge_frameworks"),
-        "redsage_generals": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_knowledge_generals"),
-        "redsage_skills": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_skills"),
-        "redsage_cli": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_tools_cli"),
-        "redsage_kali": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_tools_kali"),
+        "redsage_frameworks": ("redsage_generation", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_knowledge_frameworks"),
+        "redsage_generals": ("redsage_generation", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_knowledge_generals"),
+        "redsage_skills": ("redsage_generation", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_skills"),
+        "redsage_cli": ("redsage_generation", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_tools_cli"),
+        "redsage_kali": ("redsage_generation", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_tools_kali"),
     }
     # Collect responses for each task
     summary = {}
@@ -1673,6 +1963,28 @@ def main():
                         args.max_samples,
                         **api_kwargs,
                     )
+                elif task_type == "secbench_mcq":
+                    count = collect_secbench_mcq(
+                        subset_or_url,
+                        source,
+                        model,
+                        tokenizer,
+                        output_file,
+                        args.max_samples,
+                        **api_kwargs,
+                    )
+
+                elif task_type == "redsage_generation":
+                    count = collect_redsage_mcq_generation(
+                        task_name,
+                        source,
+                        subset_or_url,
+                        model,
+                        tokenizer,
+                        output_file,
+                        args.max_samples,
+                        **api_kwargs,
+                    )
 
                 elif task_type == "hf":
                     # HuggingFace datasets.
@@ -1700,6 +2012,7 @@ def main():
                         args.max_samples,
                         **api_kwargs,
                     )
+    
             elif task_name == "seceval":
                 count = collect_seceval(model, tokenizer, output_file, 
                                        args.max_samples, **api_kwargs)
