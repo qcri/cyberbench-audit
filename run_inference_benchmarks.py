@@ -160,18 +160,24 @@ def score_mmlu_next_token_local(model, tokenizer, prompt: str):
         token_ids = tokenizer.encode(token_text, add_special_tokens=False)
 
         if len(token_ids) == 1:
-            lp = next_token_logprobs[token_ids[0]].item()
+            lp = float(next_token_logprobs[token_ids[0]].item())
             token_info[ans] = {
                 "token_text": token_text,
                 "token_ids": token_ids,
-                "scoring_note": "single-token exact",
+                "scoring_note": "single-token exact local equivalent",
+                "logprob": lp,
             }
         else:
-            lp = next_token_logprobs[token_ids[0]].item()
+            # Faithful to Hendrycks/test behavior:
+            # original code looks for exact keys " A", " B", " C", " D"
+            # in top_logprobs and assigns -100 if missing.
+            # Do NOT score only the first token.
+            lp = -100.0
             token_info[ans] = {
                 "token_text": token_text,
                 "token_ids": token_ids,
-                "scoring_note": "multi-token fallback scored first token only",
+                "scoring_note": "multi-token continuation; original-style missing exact key fallback = -100",
+                "logprob": lp,
             }
 
         lprobs.append(lp)
@@ -475,7 +481,9 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
                      use_api: bool = False, use_vllm: bool = False, vllm_model=None,
                      api_endpoint: str = None, api_model: str = None, api_key: str = "",
                      batch_size: int = None, system_prompt: str = None,
-                     messages: list = None, task_name: str = None, **kwargs) -> str:
+                     messages: list = None, task_name: str = None,
+                     temperature: float = 0.0, top_p: float = 1.0,
+                     seed: int = None, **kwargs) -> str:
     """Generate response using local inference, vLLM, or API
 
     Args:
@@ -969,8 +977,10 @@ def collect_mmlu_logprobs(task_name: str, dataset_name: str, subset_name: str,
                     "temperature": 0,
                     "echo": True,
                     "local_hf_note": (
-                        "Implemented by computing next-token logits for answer tokens "
-                        "' A', ' B', ' C', and ' D'."
+                        "Implemented by computing next-token logits for exact answer strings "
+                        "' A', ' B', ' C', and ' D'. If a string is not a single tokenizer token, "
+                        "this local implementation assigns -100, matching the original MMLU "
+                        "missing-top_logprobs fallback behavior more closely than first-token scoring."
                     ),
                 },
                 "official_scoring": "argmax logprob among ' A', ' B', ' C', and ' D'",
