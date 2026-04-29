@@ -1,0 +1,3 @@
+[submodule "external/RedSage"]
+	path = external/RedSage
+	url = https://github.com/RISys-Lab/RedSage.git
