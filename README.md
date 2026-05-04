@@ -7,10 +7,10 @@
 
 ## Overview
 
-The cybersecurity LLM evaluation ecosystem has expanded rapidly, yielding **12 benchmark families** and **5 security-specialized models** between 2023-2025—yet no systematic analysis of their quality, coverage, or mutual consistency exists. This repository provides:
+The cybersecurity LLM evaluation ecosystem has expanded rapidly, yielding **11 benchmark families** and **5 security-specialized models** between 2023-2025—yet no systematic analysis of their quality, coverage, or mutual consistency exists. This repository provides:
 
 - **Two-axis taxonomy** separating knowledge benchmarks (factual recall, CTI reasoning, structured extraction) from capability benchmarks (adversarial robustness, offensive operations)
-- **Six-dimension meta-evaluation framework** (D1-D6) for assessing benchmark quality
+- **Five-dimension meta-evaluation framework** (D1-D5) for assessing benchmark quality
 - **Unified evaluation harness** supporting 20+ cybersecurity tasks across 9 benchmark families
 - **Reproducible benchmarking protocol** addressing seven critical gaps in current evaluation practices
 
@@ -110,16 +110,6 @@ pip install -r requirements.txt
 # Optional: Install vLLM for fast batched inference
 pip install vllm
 ```
-
-### Dependencies
-
-Core packages:
-- `torch>=2.0.0` - PyTorch deep learning framework
-- `transformers>=4.35.0` - HuggingFace model library
-- `peft>=0.7.0` - Parameter-efficient fine-tuning (optional)
-- `datasets>=2.14.0` - HuggingFace datasets
-- `numpy`, `scikit-learn` - Metrics and evaluation
-- `tqdm`, `requests`, `pyyaml`, `python-dotenv` - Utilities
 
 ## Usage
 
@@ -257,31 +247,6 @@ This runs all 7 experiment scripts and generates:
 - Practitioner guides and recommendations
 
 See [experiment/README.md](experiment/README.md) for detailed documentation.
-
-## Evaluated Models
-
-### Base Model
-- **Llama-3.1-8B-Instruct**: General-purpose instruction-tuned model
-
-### Security-Specialized LLMs
-- **Llama-Primus-Merged** (TrendMicro): CPT with 2.75B security tokens + 835 reasoning samples
-- **Llama-Primus-Base** (TrendMicro): CPT with 2.75B security tokens
-- **Foundation-Sec-8B-Instruct**: CPT with 5.1B security tokens + 28K SFT samples
-- **RedSage-8B-Ins** (RISys-Lab): CPT with 11.8B security tokens + 266K SFT samples
-- **RedSage-8B-DPO** (RISys-Lab): RedSage-Ins + DPO alignment
-
-### Multilingual
-- **QCRI/Fanar-1-9B-Instruct**: Arabic-capable model for multilingual evaluation
-
-## Evaluation Protocol Recommendations
-
-Based on our gap analysis, we propose five standard requirements:
-
-1. **Unified Harness**: Use shared evaluation infrastructure with pinned dependencies
-2. **LLM-Judge for Structured Tasks**: Replace regex with LLM-based extraction for CWE/MITRE IDs
-3. **Backend Consistency**: Document inference backend (transformers/vLLM/API) and verify stability
-4. **Provenance Disclosure**: Report benchmark authorship clusters and potential circular dependencies
-5. **Multilingual Coverage**: Include non-English evaluation (minimum: Arabic for cybersecurity)
 
 
 ## License
