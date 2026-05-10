@@ -309,6 +309,24 @@ def apply_stop_sequence(text: str, stop_sequence=None) -> str:
 
     return text[:earliest].strip()
 
+
+def extract_thinking_and_answer(text: str) -> tuple:
+    """Split a thinking-model response into (thinking_trace, answer_text).
+
+    Works for Qwen3, DeepSeek-R1, etc. that wrap reasoning in <think>...</think>.
+    Returns (thinking, answer) where answer is everything after </think>.
+    If no thinking tags are present, returns ("", text) unchanged.
+    """
+    import re
+    m = re.search(r"<think>(.*?)</think>(.*)", text, flags=re.DOTALL)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    # Unclosed tag — model was cut off mid-think; treat all as thinking, no answer
+    m_open = re.search(r"<think>(.*)", text, flags=re.DOTALL)
+    if m_open:
+        return m_open.group(1).strip(), ""
+    return "", text
+
 # Helpers:
 def load_json_dataset(source: str):
     if source.startswith("http://") or source.startswith("https://"):
@@ -1690,11 +1708,16 @@ def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
         return ([{"role": "system", "content": instruction}] + chat_few_shot
                 + [{"role": "user", "content": qt}])
 
+    # SecEval answers are short (e.g. "AB", "ABCD") — 5 tokens is enough for
+    # local/vLLM, but Azure OpenAI and some APIs require max_output_tokens >= 16.
+    is_api = api_kwargs.get("use_api", False) or api_kwargs.get("api_endpoint")
+    seceval_max_tokens = 16 if is_api else 5
+
     if use_vllm and vllm_model:
         print(f"  [vLLM batch mode] {len(valid_qs)} prompts")
         batch_responses = _vllm_batch_generate_messages(
             vllm_model, tokenizer, [_build_seceval_messages(q) for q in valid_qs],
-            max_new_tokens=5, temperature=0.0,
+            max_new_tokens=seceval_max_tokens, temperature=0.0,
         )
     else:
         batch_responses = None
@@ -1713,7 +1736,7 @@ def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
             response = pre_response
         else:
             response = generate_response(
-                model, tokenizer, messages=messages, max_new_tokens=5, **api_kwargs,
+                model, tokenizer, messages=messages, max_new_tokens=seceval_max_tokens, **api_kwargs,
             )
 
         result = {
@@ -2001,14 +2024,20 @@ def collect_redsage_mcq_generation(task_name: str, dataset_name: str, subset_nam
 
     all_samples = [dict(s) for s in dataset]
 
+    # For thinking models (e.g. Qwen3, DeepSeek-R1), passing stop=["\n"] to vLLM
+    # truncates at the first newline inside <think>...</think>, giving empty responses.
+    # Instead we generate without a vLLM stop, then post-process:
+    #   1. split off <think>...</think> trace
+    #   2. apply "\n" stop to just the answer portion
+    #   3. store the thinking trace in metadata
     if use_vllm and vllm_model:
         print(f"  [vLLM batch mode] {len(all_samples)} prompts")
-        # Pass stop=["\n"] so vLLM cuts generation at newline — faithful to RedSage EM style.
         all_prompts = [build_redsage_prompt(s, include_context=False) for s in all_samples]
         batch_raw = _vllm_batch_generate(
             vllm_model, tokenizer,
             [(p, None) for p in all_prompts],
-            max_new_tokens=100, temperature=0.0, stop=["\n"],
+            max_new_tokens=2048, temperature=0.0,
+            # No stop=["\n"] here — applied post-generation after stripping thinking tags
         )
     else:
         batch_raw = None
@@ -2028,7 +2057,8 @@ def collect_redsage_mcq_generation(task_name: str, dataset_name: str, subset_nam
                 model, tokenizer, prompt, max_new_tokens=100, temperature=0.0, **api_kwargs,
             )
 
-        response = apply_stop_sequence(raw_response, stop_sequence=["\n"])
+        thinking_trace, answer_text = extract_thinking_and_answer(raw_response)
+        response = apply_stop_sequence(answer_text, stop_sequence=["\n"])
 
         result = {
             "task": task_name,
@@ -2054,12 +2084,14 @@ def collect_redsage_mcq_generation(task_name: str, dataset_name: str, subset_nam
                 ],
                 "generation_params": {
                     "temperature": 0.0,
-                    "max_new_tokens": 100,
+                    "max_new_tokens": 2048,
                     "official_em_generation_size": 100,
                     "official_em_stop_sequence": ["\\n"],
                     "stop_sequence_applied_post_generation": True,
+                    "vllm_stop_moved_to_post_generation": True,
                 },
                 "raw_model_response_before_stop": raw_response,
+                "thinking_trace": thinking_trace,
                 "question": sample.get("question", ""),
                 "choices": sample.get("answers", {}),
                 "content_preserved_but_not_prompted": sample.get("content", ""),
