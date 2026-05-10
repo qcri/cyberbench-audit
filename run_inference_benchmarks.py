@@ -132,6 +132,60 @@ def build_mmlu_full_prompt(dev_rows: list, test_sample: dict, subject: str, ntra
     return prompt, k
 
 
+def score_mmlu_next_token_vllm(vllm_llm, tokenizer, prompt: str) -> dict:
+    """
+    Official-style MMLU scoring using vLLM.
+
+    Equivalent to the original OpenAI Completion path:
+        max_tokens=1, logprobs=100, temperature=0, echo=True
+    vLLM exposes next-token logprobs via SamplingParams(logprobs=N, max_tokens=1).
+    The raw 5-shot prompt is passed directly — no chat template — matching the
+    original completion-style evaluation.
+    """
+    # vLLM caps logprobs at 20 in some versions; 20 is sufficient since we only
+    # need " A", " B", " C", " D" to appear in the top-N — they virtually always do.
+    sampling_params = SamplingParams(max_tokens=1, temperature=0, logprobs=20)
+    outputs = vllm_llm.generate([prompt], sampling_params)
+    # logprobs[0] = {token_id: Logprob} for the first (only) generated token,
+    # which is the model's next-token distribution over the full vocabulary.
+    first_pos = outputs[0].outputs[0].logprobs[0]  # dict[int, Logprob]
+
+    # tokenizer=None when --use_vllm is active; pull it from the LLM object.
+    if tokenizer is None:
+        tokenizer = vllm_llm.get_tokenizer()
+
+    lprobs = []
+    token_info = {}
+
+    for ans in MMLU_CHOICES:
+        token_text = " " + ans
+        token_ids = tokenizer.encode(token_text, add_special_tokens=False)
+        tid = token_ids[0]
+
+        if tid in first_pos:
+            lp = first_pos[tid].logprob
+            note = "single-token exact" if len(token_ids) == 1 else "multi-token fallback first-token"
+        else:
+            lp = -100.0
+            note = "not in top-100 logprobs; assigned -100"
+
+        lprobs.append(lp)
+        token_info[ans] = {"token_text": token_text, "token_ids": token_ids,
+                           "logprob": lp, "scoring_note": note}
+
+    lprobs_np = np.array(lprobs)
+    probs = np.exp(lprobs_np - np.max(lprobs_np))
+    probs = probs / probs.sum()
+    pred = MMLU_CHOICES[int(np.argmax(lprobs_np))]
+
+    return {
+        "prediction": pred,
+        "logprobs": {MMLU_CHOICES[i]: float(lprobs_np[i]) for i in range(4)},
+        "probs":    {MMLU_CHOICES[i]: float(probs[i])    for i in range(4)},
+        "token_info": token_info,
+    }
+
+
 def score_mmlu_next_token_local(model, tokenizer, prompt: str):
     """
     Official-style MMLU scoring for local HF models.
@@ -345,6 +399,7 @@ def get_task_type(task_name: str) -> str:
 
         # Other MCQ-style
         "cybermetric": "mcq",
+        "cybermetric_paper": "mcq",
         "cissp": "mcq",
         "mmlu_cs": "mcq",
         "mmlu-cs": "mcq",
@@ -439,7 +494,7 @@ def chat_completion_api(endpoint: str, model_name: str, prompt: str = None,
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    
+
     if messages is None:
         messages = []
         if system_prompt:
@@ -456,7 +511,7 @@ def chat_completion_api(endpoint: str, model_name: str, prompt: str = None,
     }
     if seed is not None:
         payload["seed"] = seed
-    
+
     for attempt in range(retries):
         try:
             response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
@@ -471,23 +526,153 @@ def chat_completion_api(endpoint: str, model_name: str, prompt: str = None,
                 return f"ERROR: {str(e)}"
 
 
+def chat_completion_azure_openai(endpoint: str, model_name: str, prompt: str = None,
+                                  api_key: str = "", max_tokens: int = 1024,
+                                  temperature: float = 0.0, top_p: float = 1.0,
+                                  seed: int = None, retries: int = 3,
+                                  system_prompt: str = None, messages: list = None) -> str:
+    """Call Azure OpenAI Responses API (api-version=2025-04-01-preview).
+
+    Endpoint format: https://<resource>.openai.azure.com/openai/responses?api-version=...
+    Auth: api-key header (not Authorization: Bearer).
+    Payload: model + input list; response in output[0].content[0].text.
+    """
+    headers = {"Content-Type": "application/json", "api-key": api_key}
+
+    if messages is None:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if prompt is not None:
+            messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": model_name,
+        "input": messages,
+        "max_output_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+    # Note: Azure Responses API (2025-04-01-preview) does not support 'seed' parameter
+    # if seed is not None:
+    #     payload["seed"] = seed
+
+    import urllib.request as _urlreq
+    import urllib.error as _urlerr
+
+    # Strip any non-ASCII characters from api_key (e.g. smart quotes from copy-paste)
+    api_key = api_key.encode('ascii', errors='ignore').decode('ascii').strip()
+
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+
+    for attempt in range(retries):
+        try:
+            # Use urllib.request instead of requests to avoid latin-1 codec issues
+            # in http.client when prompt text contains non-ASCII characters.
+            req = _urlreq.Request(
+                endpoint,
+                data=body,
+                headers={"Content-Type": "application/json", "api-key": api_key},
+                method="POST",
+            )
+            with _urlreq.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+            return data["output"][0]["content"][0]["text"]
+        except _urlerr.HTTPError as e:
+            err_body = e.read().decode('utf-8', errors='replace')
+            print(f"Azure HTTP {e.code} (attempt {attempt+1}/{retries}): {err_body[:300]}")
+            if attempt < retries - 1:
+                continue
+            return f"ERROR: HTTP {e.code}: {err_body[:200]}"
+        except Exception as e:
+            print(f"Azure OpenAI API call failed (attempt {attempt+1}/{retries}): {e}")
+            if attempt < retries - 1:
+                continue
+            return f"ERROR: {str(e)}"
+
+
+def chat_completion_azure_claude(endpoint: str, model_name: str, prompt: str = None,
+                                  api_key: str = "", max_tokens: int = 1024,
+                                  temperature: float = 0.0, top_p: float = 1.0,
+                                  seed: int = None, retries: int = 3,
+                                  system_prompt: str = None, messages: list = None) -> str:
+    """Call Azure-hosted Claude via Anthropic Messages API.
+
+    Endpoint format: https://<hub>.services.ai.azure.com/anthropic/v1/messages
+    Auth: x-api-key header + anthropic-version header.
+    System prompt is a top-level field, not a message role.
+    Response in content[0].text.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+
+    if messages is None:
+        messages = []
+        if prompt is not None:
+            messages.append({"role": "user", "content": prompt})
+    # Anthropic API does not accept system role inside messages
+    user_messages = [m for m in messages if m.get("role") != "system"]
+    resolved_system = system_prompt or next(
+        (m["content"] for m in messages if m.get("role") == "system"), None
+    )
+
+    payload = {
+        "model": model_name,
+        "messages": user_messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if resolved_system:
+        payload["system"] = resolved_system
+
+    for attempt in range(retries):
+        try:
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
+            if not response.ok:
+                body = response.content.decode('utf-8', errors='replace')
+                print(f"Azure Claude API error {response.status_code}: {body[:500]}")
+            response.raise_for_status()
+            return response.json()["content"][0]["text"]
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"Azure Claude API call failed (attempt {attempt+1}/{retries}): {e}")
+                continue
+            else:
+                print(f"Azure Claude API call failed after {retries} attempts: {e}")
+                return f"ERROR: {str(e)}"
+
+
 def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int = 1024,
                      use_api: bool = False, use_vllm: bool = False, vllm_model=None,
                      api_endpoint: str = None, api_model: str = None, api_key: str = "",
+                     api_type: str = "openai_compat",
                      batch_size: int = None, system_prompt: str = None,
-                     messages: list = None, task_name: str = None, **kwargs) -> str:
+                     messages: list = None, task_name: str = None,
+                     temperature: float = 0.0, top_p: float = 1.0, seed: int = None,
+                     **kwargs) -> str:
     """Generate response using local inference, vLLM, or API
 
     Args:
+        api_type: One of 'openai_compat' (default), 'azure_openai', 'azure_claude'
         batch_size: Ignored (used only for vLLM config, not here)
         system_prompt: Optional system instruction for chat-style models
         **kwargs: Ignored additional parameters for compatibility
     """
 
+    _api_dispatch = {
+        "openai_compat": chat_completion_api,
+        "azure_openai":  chat_completion_azure_openai,
+        "azure_claude":  chat_completion_azure_claude,
+    }
+    _call_api = _api_dispatch.get(api_type, chat_completion_api)
+
     # SEVENLLM path: use raw prompt directly
     if task_name == "sevenllm":
         if use_api:
-            return chat_completion_api(
+            return _call_api(
                 api_endpoint,
                 api_model,
                 prompt=prompt,
@@ -538,7 +723,7 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
             messages.append({"role": "user", "content": prompt})
 
     if use_api:
-        return chat_completion_api(
+        return _call_api(
             api_endpoint,
             api_model,
             prompt=prompt,
@@ -611,8 +796,10 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
     return response.strip()
 
 
-def initialize_vllm(model_path: str, base_model: str = None, 
-                   gpu_memory_utilization: float = 0.9) -> "LLM":
+def initialize_vllm(model_path: str, base_model: str = None,
+                   gpu_memory_utilization: float = 0.9,
+                   max_model_len: int = None,
+                   enforce_eager: bool = False) -> "LLM":
     """Initialize vLLM LLM for fast batch inference
     
     Args:
@@ -632,15 +819,25 @@ def initialize_vllm(model_path: str, base_model: str = None,
     print(f"Initializing vLLM with model: {model_path}")
     print(f"GPU memory utilization: {gpu_memory_utilization*100:.0f}%")
     
-    if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
-        raise RuntimeError("vLLM requires at least one CUDA GPU but none were detected.")
-    llm = LLM(
+    # Derive GPU count from env vars to avoid initializing CUDA in the parent
+    # process before vllm forks its worker processes (causes re-init errors).
+    cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+    if cuda_visible:
+        n_gpus = len([x for x in cuda_visible.split(',') if x.strip()])
+    else:
+        n_gpus = int(os.environ.get('SLURM_GPUS_ON_NODE', '1'))
+
+    vllm_kwargs = dict(
         model=model_path,
         gpu_memory_utilization=gpu_memory_utilization,
         dtype="bfloat16",
-        tensor_parallel_size=torch.cuda.device_count(),
-        trust_remote_code=True
+        tensor_parallel_size=n_gpus,
+        trust_remote_code=True,
+        enforce_eager=enforce_eager,
     )
+    if max_model_len:
+        vllm_kwargs["max_model_len"] = max_model_len
+    llm = LLM(**vllm_kwargs)
     
     return llm
 
@@ -649,7 +846,8 @@ def generate_responses_vllm(vllm_llm: "LLM", prompts: list,
                            max_tokens: int = 1024,
                            temperature: float = 0.0,
                            top_p: float = 1.0,
-                           seed: int = None) -> list:
+                           seed: int = None,
+                           stop: list = None) -> list:
     """Generate responses using vLLM batch inference
     
     Args:
@@ -666,6 +864,7 @@ def generate_responses_vllm(vllm_llm: "LLM", prompts: list,
             temperature=temperature,
             top_p=top_p,
             seed=seed,
+            stop=stop or [],
         )
     
     # Generate responses in batch
@@ -674,6 +873,45 @@ def generate_responses_vllm(vllm_llm: "LLM", prompts: list,
     # Extract text from outputs
     responses = [output.outputs[0].text.strip() for output in outputs]
     return responses
+
+
+def _vllm_batch_generate(vllm_model, tokenizer, prompt_tuples: list,
+                         max_new_tokens: int, temperature: float = 0.0,
+                         top_p: float = 1.0, seed: int = None,
+                         stop: list = None) -> list:
+    """Format a list of (user_prompt, system_prompt) pairs and batch-generate with vLLM.
+
+    Sending all prompts in one vLLM call lets the engine use continuous batching,
+    which is ~10-30x faster than calling generate([single_prompt]) in a loop.
+    Returns responses in the same order as prompt_tuples.
+    """
+    formatted = []
+    for user_prompt, system_prompt in prompt_tuples:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+        if tokenizer is not None:
+            fp = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            fp = (system_prompt + "\n" if system_prompt else "") + user_prompt
+        formatted.append(fp)
+    return generate_responses_vllm(vllm_model, formatted, max_new_tokens, temperature, top_p, seed, stop=stop)
+
+
+def _vllm_batch_generate_messages(vllm_model, tokenizer, all_messages: list,
+                                   max_new_tokens: int, temperature: float = 0.0,
+                                   top_p: float = 1.0, seed: int = None,
+                                   stop: list = None) -> list:
+    """Batch-generate for vLLM given a list of full messages arrays (supports few-shot, system turns)."""
+    formatted = []
+    for messages in all_messages:
+        if tokenizer is not None:
+            fp = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            fp = "\n".join(m.get("content", "") for m in messages)
+        formatted.append(fp)
+    return generate_responses_vllm(vllm_model, formatted, max_new_tokens, temperature, top_p, seed, stop=stop)
 
 
 def load_jsonl_dataset(source: str) -> Dataset:
@@ -850,20 +1088,33 @@ def collect_mmlu_generation(task_name: str, dataset_name: str, subset_name: str,
     print(f"Dev examples: {len(dev_rows)}")
     print(f"Test samples: {len(test_rows)}")
 
-    results = []
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
 
-    for idx, sample in enumerate(tqdm(test_rows, desc=f"Collecting {task_name.upper()}")):
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(test_rows)} prompts")
+        all_prompts = [build_mmlu_full_prompt(dev_rows, s, subset_name, ntrain=5)[0] for s in test_rows]
+        batch_responses = _vllm_batch_generate(
+            vllm_model, tokenizer, [(p, None) for p in all_prompts],
+            max_new_tokens=5, temperature=0.0,
+        )
+    else:
+        batch_responses = None
+
+    results = []
+    iter_src = zip(test_rows, batch_responses) if batch_responses is not None else \
+               ((s, None) for s in tqdm(test_rows, desc=f"Collecting {task_name.upper()}"))
+
+    for idx, (sample, pre_response) in enumerate(iter_src):
         prompt, k = build_mmlu_full_prompt(dev_rows, sample, subset_name, ntrain=5)
         ground_truth = mmlu_answer_letter(sample["answer"])
 
-        response = generate_response(
-            model,
-            tokenizer,
-            prompt,
-            max_new_tokens=5,
-            temperature=0.0,
-            **api_kwargs,
-        )
+        if pre_response is not None:
+            response = pre_response
+        else:
+            response = generate_response(
+                model, tokenizer, prompt, max_new_tokens=5, temperature=0.0, **api_kwargs,
+            )
 
         result = {
             "task": task_name,
@@ -912,21 +1163,28 @@ def collect_mmlu_logprobs(task_name: str, dataset_name: str, subset_name: str,
     """
     Collect MMLU predictions using official-style logprob scoring.
 
-    This is closest to the original MMLU implementation, but currently supports
-    local HF models only because API/vLLM paths in this script do not expose
-    equivalent Completion echo=True logprobs.
+    Supports two backends:
+      - vLLM:     score_mmlu_next_token_vllm() — SamplingParams(logprobs=100, max_tokens=1)
+      - Local HF: score_mmlu_next_token_local() — reads logits[0, -1, :] directly
+
+    Both pass the raw 5-shot prompt without a chat template, matching the original
+    Hendrycks et al. Completion API behaviour. API mode is not supported.
     """
     print(f"\n{'='*70}")
     print(f"Collecting {task_name.upper()} with official-style MMLU logprob scoring")
     print(f"Dataset: {dataset_name}/{subset_name}")
     print(f"{'='*70}")
 
-    if api_kwargs.get("use_api") or api_kwargs.get("use_vllm"):
+    if api_kwargs.get("use_api"):
         raise ValueError(
-            "mmlu_logprobs currently supports local HF models only. "
-            "Official MMLU requires logprobs over ' A', ' B', ' C', and ' D'. "
-            "Your current API/vLLM generation paths do not expose the same Completion logprobs behavior."
+            "mmlu_logprobs does not support API mode. "
+            "Use --use_vllm or local HF inference instead."
         )
+
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+    backend = "vllm" if (use_vllm and vllm_model) else "local_hf"
+    print(f"Backend: {backend}")
 
     dev_dataset = load_dataset(dataset_name, subset_name, split="dev")
     test_dataset = load_dataset(dataset_name, subset_name, split="test")
@@ -946,7 +1204,10 @@ def collect_mmlu_logprobs(task_name: str, dataset_name: str, subset_name: str,
         prompt, k = build_mmlu_full_prompt(dev_rows, sample, subset_name, ntrain=5)
         ground_truth = mmlu_answer_letter(sample["answer"])
 
-        score_info = score_mmlu_next_token_local(model, tokenizer, prompt)
+        if backend == "vllm":
+            score_info = score_mmlu_next_token_vllm(vllm_model, tokenizer, prompt)
+        else:
+            score_info = score_mmlu_next_token_local(model, tokenizer, prompt)
         prediction = score_info["prediction"]
 
         result = {
@@ -963,15 +1224,12 @@ def collect_mmlu_logprobs(task_name: str, dataset_name: str, subset_name: str,
                 "prompt_mode": "official_mmlu_5shot_prompt",
                 "official_inference_script": "hendrycks/test/evaluate.py",
                 "ntrain": k,
+                "backend": backend,
                 "generation_params": {
                     "max_tokens": 1,
                     "logprobs": 100,
                     "temperature": 0,
                     "echo": True,
-                    "local_hf_note": (
-                        "Implemented by computing next-token logits for answer tokens "
-                        "' A', ' B', ' C', and ' D'."
-                    ),
                 },
                 "official_scoring": "argmax logprob among ' A', ' B', ' C', and ' D'",
                 "prediction": prediction,
@@ -1010,38 +1268,41 @@ def collect_ctibench_tsv(task_name: str, tsv_url: str,
 
     print(f"Total samples: {len(dataset)}")
 
+    SYS_PROMPT = "You are a cybersecurity expert specializing in cyberthreat intelligence."
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+
+    samples = [dict(s) for s in dataset if s.get("Prompt")]
     results = []
 
-    for idx, sample in enumerate(tqdm(dataset, desc=f"Collecting {task_name.upper()}")):
-        sample = dict(sample)
-
-        # Faithful to CTI-Bench: use Prompt column verbatim.
-        prompt = sample.get("Prompt")
-        if not prompt:
-            continue
-
-        # CTI-Bench mostly uses GT, but TAA may need special eval assets.
-        ground_truth = str(sample.get("GT", "") or "").strip()
-
-        response = generate_response(
-            model,
-            tokenizer,
-            prompt,
-            max_new_tokens=2048,
-            system_prompt="You are a cybersecurity expert specializing in cyberthreat intelligence.",
-            temperature=0.0,
-            top_p=1.0,
-            seed=42,
-            **api_kwargs,
+    if use_vllm and vllm_model:
+        # Batch path: send all prompts to vLLM in one call for ~10-30x speedup.
+        print(f"  [vLLM batch mode] {len(samples)} prompts")
+        responses = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(s["Prompt"], SYS_PROMPT) for s in samples],
+            max_new_tokens=2048, temperature=0.0, top_p=1.0, seed=42,
         )
+    else:
+        responses = []
+        for sample in tqdm(samples, desc=f"Collecting {task_name.upper()}"):
+            responses.append(generate_response(
+                model, tokenizer, sample["Prompt"],
+                max_new_tokens=2048,
+                system_prompt=SYS_PROMPT,
+                temperature=0.0, top_p=1.0, seed=42,
+                **api_kwargs,
+            ))
 
+    for idx, (sample, response) in enumerate(zip(samples, responses)):
+        ground_truth = str(sample.get("GT", "") or "").strip()
         metadata = {
             "dataset": "maveryn/cti-bench",
             "source": tsv_url,
             "sample_id": idx,
             "task_type": get_task_type(task_name),
             "prompt_mode": "original_prompt_column",
-            "system_prompt": "You are a cybersecurity expert specializing in cyberthreat intelligence.",
+            "system_prompt": SYS_PROMPT,
             "generation_params": {
                 "temperature": 0,
                 "top_p": 1,
@@ -1050,27 +1311,22 @@ def collect_ctibench_tsv(task_name: str, tsv_url: str,
             },
             "collector_scope": "raw_response_collection_only",
             "original_inference_script": "evaluation/model-prediction.ipynb",
+            "original_fields": sample,
         }
-
-        # Preserve all original fields for downstream eval/debugging.
-        metadata["original_fields"] = sample
-
         if task_name == "ctibench_taa":
             metadata["requires_original_eval_assets"] = True
             metadata["ground_truth_note"] = (
                 "Original CTI-Bench TAA evaluation uses alias/related dictionaries; "
                 "the TSV is not a simple MCQ/GT-only task."
             )
-
-        result = {
+        results.append({
             "task": task_name,
             "index": idx,
-            "prompt": prompt,
+            "prompt": sample["Prompt"],
             "ground_truth": ground_truth,
             "model_response": response,
             "metadata": metadata,
-        }
-        results.append(result)
+        })
 
     with open(output_file, "w", encoding="utf-8") as f:
         for result in results:
@@ -1136,27 +1392,41 @@ def collect_athenabench_jsonl(task_name: str, jsonl_url: str,
     
     results = []
     athena_task = athena_eval_task_name(task_name)
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
 
-    for idx, sample in enumerate(tqdm(dataset, desc=f"Collecting {task_name.upper()}")):
-        sample = dict(sample)
+    samples_list = [dict(s) for s in dataset if s.get("prompt", "")]
 
-        # Faithful to AthenaBench run.py: row.get("prompt", "")
-        prompt = sample.get("prompt", "")
-        if not prompt:
-            continue
-        
-        # Faithful to AthenaBench run.py: row.get("answer", "")
-        ground_truth = str(sample.get("answer", "") or "").strip()
-        
-        # Faithful to models.py: no system prompt; single user prompt.
-        response = generate_response(
-            model,
-            tokenizer,
-            prompt,
-            max_new_tokens=2048,
-            temperature=0.0,
-            **api_kwargs,
+    if use_vllm and vllm_model:
+        # Batch path — no system prompt, faithful to models.py.
+        print(f"  [vLLM batch mode] {len(samples_list)} prompts")
+        batch_responses = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(s["prompt"], None) for s in samples_list],
+            max_new_tokens=2048, temperature=0.0,
         )
+    else:
+        batch_responses = None
+
+    iter_source = zip(samples_list, batch_responses) if batch_responses is not None else \
+                  ((s, None) for s in tqdm(samples_list, desc=f"Collecting {task_name.upper()}"))
+
+    for idx, (sample, pre_response) in enumerate(iter_source):
+        prompt = sample.get("prompt", "")
+        ground_truth = str(sample.get("answer", "") or "").strip()
+
+        if pre_response is not None:
+            response = pre_response
+        else:
+            # Faithful to models.py: no system prompt; single user prompt.
+            response = generate_response(
+                model,
+                tokenizer,
+                prompt,
+                max_new_tokens=2048,
+                temperature=0.0,
+                **api_kwargs,
+            )
         
         metadata = {
             "source": jsonl_url,
@@ -1180,7 +1450,7 @@ def collect_athenabench_jsonl(task_name: str, jsonl_url: str,
             "athena_output_compatible": {
                 "id": idx,
                 "prompt": prompt,
-                "response": response,
+                "response": response,   # populated above
                 "answer": ground_truth,
             },
         }
@@ -1288,28 +1558,36 @@ def collect_secure_tsv(task_name: str, tsv_url: str,
 
     print(f"Total samples: {len(dataset)}")
 
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+    samples_list = [dict(s) for s in dataset if s.get("Prompt")]
     results = []
 
-    for idx, sample in enumerate(tqdm(dataset, desc=f"Collecting {task_name.upper()}")):
-        sample = dict(sample)
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(samples_list)} prompts")
+        responses = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(s["Prompt"], None) for s in samples_list],
+            max_new_tokens=1024, temperature=0.7,
+        )
+    else:
+        responses = None
 
-        # Faithful to SECURE: use Prompt column verbatim.
-        prompt = sample.get("Prompt")
-        if not prompt:
-            continue
+    iter_src = zip(samples_list, responses) if responses is not None else \
+               ((s, None) for s in tqdm(samples_list, desc=f"Collecting {task_name.upper()}"))
 
-        # SECURE gold field.
+    for idx, (sample, pre_response) in enumerate(iter_src):
+        prompt = sample.get("Prompt", "")
         ground_truth = str(sample.get("Correct Answer", "") or "").strip()
 
-        #temperature=0.7 is explicitly mentioned for SECURE in the paper.
-        response = generate_response(
-            model,
-            tokenizer,
-            prompt,
-            max_new_tokens=1024,
-            temperature=0.7,
-            **api_kwargs,
-        )
+        if pre_response is not None:
+            response = pre_response
+        else:
+            response = generate_response(
+                model, tokenizer, prompt,
+                max_new_tokens=1024, temperature=0.7,
+                **api_kwargs,
+            )
 
         metadata = {
             "dataset": "aiforsec/SECURE",
@@ -1402,33 +1680,41 @@ def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
         },
     ]
 
-    results = []
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
 
-    for idx, q in enumerate(tqdm(questions, desc="Collecting SecEval")):
+    valid_qs = [q for q in questions if q.get("question") and q.get("choices")]
+
+    def _build_seceval_messages(q):
+        qt = ("Question: " + q["question"] + " ".join(q["choices"])).replace("\n", " ")
+        return ([{"role": "system", "content": instruction}] + chat_few_shot
+                + [{"role": "user", "content": qt}])
+
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(valid_qs)} prompts")
+        batch_responses = _vllm_batch_generate_messages(
+            vllm_model, tokenizer, [_build_seceval_messages(q) for q in valid_qs],
+            max_new_tokens=5, temperature=0.0,
+        )
+    else:
+        batch_responses = None
+
+    results = []
+    iter_src = zip(valid_qs, batch_responses) if batch_responses is not None else \
+               ((q, None) for q in tqdm(valid_qs, desc="Collecting SecEval"))
+
+    for idx, (q, pre_response) in enumerate(iter_src):
         question = q.get("question", "")
         choices = q.get("choices", [])
+        question_text = ("Question: " + question + " ".join(choices)).replace("\n", " ")
+        messages = _build_seceval_messages(q)
 
-        if not question or not choices:
-            continue
-
-        # Faithful to eval.py:
-        # "Question: " + dataset_row["question"] + " ".join(dataset_row["choices"])
-        question_text = "Question: " + question + " ".join(choices)
-        question_text = question_text.replace("\n", " ")
-
-        messages = (
-            [{"role": "system", "content": instruction}]
-            + chat_few_shot
-            + [{"role": "user", "content": question_text}]
-        )
-
-        response = generate_response(
-            model,
-            tokenizer,
-            messages=messages,
-            max_new_tokens=5,
-            **api_kwargs,
-        )
+        if pre_response is not None:
+            response = pre_response
+        else:
+            response = generate_response(
+                model, tokenizer, messages=messages, max_new_tokens=5, **api_kwargs,
+            )
 
         result = {
             "task": "seceval",
@@ -1470,10 +1756,15 @@ def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
 
 
 def collect_cybermetric(model, tokenizer, output_file: str, max_samples: int = None,
-                        dataset_url: str = None, **api_kwargs):
-    """Collect responses from CyberMetric using the original evaluator prompt."""
+                        dataset_url: str = None, paper_mode: bool = False, **api_kwargs):
+    """Collect responses from CyberMetric using the original evaluator prompt.
+
+    paper_mode=False (default): temperature=0.0, deterministic — for cross-model comparison.
+    paper_mode=True:            temperature=1.0, top_p=0.9 — matches paper settings.
+    """
+    mode_label = "paper-mode (temp=1.0, top_p=0.9)" if paper_mode else "det-mode (temp=0.0)"
     print(f"\n{'='*70}")
-    print("Collecting CyberMetric responses")
+    print(f"Collecting CyberMetric responses [{mode_label}]")
     print(f"{'='*70}")
 
     if dataset_url is None:
@@ -1488,35 +1779,53 @@ def collect_cybermetric(model, tokenizer, output_file: str, max_samples: int = N
     print(f"Total samples: {len(questions_data)}")
 
     system_prompt = "You are a security expert who answers questions."
-    results = []
+    temperature = 1.0 if paper_mode else 0.0
+    top_p = 0.9 if paper_mode else 1.0
+    task_key = "cybermetric_paper" if paper_mode else "cybermetric"
 
-    for idx, sample in enumerate(tqdm(questions_data, desc="Collecting CYBERMETRIC")):
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+
+    def _build_cybermetric_prompt(s):
+        options = ", ".join([f"{k}) {v}" for k, v in s["answers"].items()])
+        return (f"Question: {s['question']}\nOptions: {options}\n\n"
+                f"Choose the correct answer (A, B, C, or D) only. "
+                f"Always return in this format: 'ANSWER: X' ")
+
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(questions_data)} prompts")
+        batch_responses = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(_build_cybermetric_prompt(s), system_prompt) for s in questions_data],
+            max_new_tokens=1024, temperature=temperature, top_p=top_p,
+        )
+    else:
+        batch_responses = None
+
+    results = []
+    iter_src = zip(questions_data, batch_responses) if batch_responses is not None else \
+               ((s, None) for s in tqdm(questions_data, desc="Collecting CYBERMETRIC"))
+
+    for idx, (sample, pre_response) in enumerate(iter_src):
         question = sample["question"]
         answers = sample["answers"]
         ground_truth = str(sample["solution"]).strip()
+        prompt = _build_cybermetric_prompt(sample)
 
-        # Exact CyberMetric_evaluator.py prompt construction.
-        options = ", ".join([f"{key}) {value}" for key, value in answers.items()])
-        prompt = (
-            f"Question: {question}\n"
-            f"Options: {options}\n\n"
-            f"Choose the correct answer (A, B, C, or D) only. "
-            f"Always return in this format: 'ANSWER: X' "
-        )
-
-        response = generate_response(
-            model,
-            tokenizer,
-            prompt,
-            system_prompt=system_prompt,
-            # Original CyberMetric evaluator does not specify max_tokens/temperature.
-            temperature=0.0,
-            max_new_tokens=1024,
-            **api_kwargs,
-        )
+        if pre_response is not None:
+            response = pre_response
+        else:
+            gen_kwargs = dict(api_kwargs)
+            if paper_mode:
+                gen_kwargs["top_p"] = top_p
+            response = generate_response(
+                model, tokenizer, prompt,
+                system_prompt=system_prompt, temperature=temperature,
+                max_new_tokens=1024, **gen_kwargs,
+            )
 
         result = {
-            "task": "cybermetric",
+            "task": task_key,
             "index": idx,
             "prompt": prompt,
             "ground_truth": ground_truth,
@@ -1533,9 +1842,10 @@ def collect_cybermetric(model, tokenizer, output_file: str, max_samples: int = N
                 "official_inference_script": "CyberMetric_evaluator.py",
                 "generation_params": {
                     "max_new_tokens": 1024,
-                    "temperature": 0.0,
-                    "temperature_note": "Not specified in original CyberMetric evaluator; set to 0.0 for deterministic raw collection.",
-                    "max_tokens_note": "Not specified in original CyberMetric evaluator."
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "paper_mode": paper_mode,
+                    "paper_ref": "CSR'24 doi:10.1109/CSR61664.2024.10679494 — temp=1.0, top_p=0.9, top_k=50",
                 },
                 "official_answer_extraction": r"ANSWER:?\s*([A-D])",
                 "official_retry_policy": "Original evaluator retries up to 5 times if regex extraction fails.",
@@ -1575,36 +1885,47 @@ def collect_secbench_mcq(task_name: str, dataset_url: str,
 
     print(f"Total samples: {len(samples)}")
 
-    results = []
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
 
-    for idx, sample in enumerate(tqdm(samples, desc=f"Collecting {task_name.upper()}")):
+    valid_samples = [s for s in samples
+                     if s.get("question") and s.get("answers") and s.get("label")]
+
+    def _build_secbench_prompt(s):
+        p = ("Answer the following multiple-choice cybersecurity question. "
+             "Select the correct option letter(s) from A, B, C, and D. "
+             "Return only the letter(s), with no explanation.\n\n")
+        p += str(s["question"]).strip() + "\n"
+        for i, a in enumerate(s["answers"][:4]):
+            p += f"{chr(65+i)}. {a}\n"
+        return p + "Answer:"
+
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(valid_samples)} prompts")
+        batch_responses = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(_build_secbench_prompt(s), None) for s in valid_samples],
+            max_new_tokens=16, temperature=0.0,
+        )
+    else:
+        batch_responses = None
+
+    results = []
+    iter_src = zip(valid_samples, batch_responses) if batch_responses is not None else \
+               ((s, None) for s in tqdm(valid_samples, desc=f"Collecting {task_name.upper()}"))
+
+    for idx, (sample, pre_response) in enumerate(iter_src):
         question = str(sample.get("question", "") or "").strip()
         answers = sample.get("answers", [])
         ground_truth = str(sample.get("label", "") or "").strip()
+        prompt = _build_secbench_prompt(sample)
 
-        if not question or not answers or not ground_truth:
-            continue
-
-        prompt = (
-            "Answer the following multiple-choice cybersecurity question. "
-            "Select the correct option letter(s) from A, B, C, and D. "
-            "Return only the letter(s), with no explanation.\n\n"
-        )
-        prompt += question + "\n"
-
-        for i, answer in enumerate(answers[:4]):
-            prompt += f"{chr(65 + i)}. {answer}\n"
-
-        prompt += "Answer:"
-
-        response = generate_response(
-            model,
-            tokenizer,
-            prompt,
-            max_new_tokens=16,
-            temperature=0.0,
-            **api_kwargs,
-        )
+        if pre_response is not None:
+            response = pre_response
+        else:
+            response = generate_response(
+                model, tokenizer, prompt, max_new_tokens=16, temperature=0.0, **api_kwargs,
+            )
 
         result = {
             "task": task_name,
@@ -1675,22 +1996,37 @@ def collect_redsage_mcq_generation(task_name: str, dataset_name: str, subset_nam
 
     print(f"Total samples: {len(dataset)}")
 
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+
+    all_samples = [dict(s) for s in dataset]
+
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(all_samples)} prompts")
+        # Pass stop=["\n"] so vLLM cuts generation at newline — faithful to RedSage EM style.
+        all_prompts = [build_redsage_prompt(s, include_context=False) for s in all_samples]
+        batch_raw = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(p, None) for p in all_prompts],
+            max_new_tokens=100, temperature=0.0, stop=["\n"],
+        )
+    else:
+        batch_raw = None
+
     results = []
+    iter_src = zip(all_samples, batch_raw) if batch_raw is not None else \
+               ((s, None) for s in tqdm(all_samples, desc=f"Collecting {task_name.upper()}"))
 
-    for idx, sample in enumerate(tqdm(dataset, desc=f"Collecting {task_name.upper()}")):
-        sample = dict(sample)
-
+    for idx, (sample, pre_raw) in enumerate(iter_src):
         prompt = build_redsage_prompt(sample, include_context=False)
         ground_truth = redsage_answer_letter(sample["solution"])
 
-        raw_response = generate_response(
-            model,
-            tokenizer,
-            prompt,
-            max_new_tokens=100,
-            temperature=0.0,
-            **api_kwargs,
-        )
+        if pre_raw is not None:
+            raw_response = pre_raw
+        else:
+            raw_response = generate_response(
+                model, tokenizer, prompt, max_new_tokens=100, temperature=0.0, **api_kwargs,
+            )
 
         response = apply_stop_sequence(raw_response, stop_sequence=["\n"])
 
@@ -1900,31 +2236,42 @@ def collect_sevenllm(model, tokenizer, output_file: str, max_samples: int = None
     
     print(f"Samples to process: {len(english_samples)}")
     
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+
+    def _build_sevenllm_prompt(sample):
+        instruction = sample.get('instruction', '')
+        input_text = sample.get('input', '')
+        tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+        if "qwen" in tokenizer_name:
+            return SEVENLLM_PROMPT_DICT["prompt_input_qwen"].format(
+                instruction=instruction, input=input_text)
+        return SEVENLLM_PROMPT_DICT["prompt_input"].format(
+            instruction=instruction, input=input_text)
+
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(english_samples)} prompts")
+        all_prompts = [_build_sevenllm_prompt(s) for s in english_samples]
+        batch_responses = generate_responses_vllm(vllm_model, all_prompts, 2000, temperature=0.0)
+    else:
+        batch_responses = None
+
     # Collect responses
     results = []
-    for idx, sample in enumerate(tqdm(english_samples, desc="Collecting SEVENLLM")):
+    iter_src = zip(english_samples, batch_responses) if batch_responses is not None else \
+               ((s, None) for s in tqdm(english_samples, desc="Collecting SEVENLLM"))
+
+    for idx, (sample, pre_response) in enumerate(iter_src):
         instruction = sample.get('instruction', '')
         input_text = sample.get('input', '')
         ground_truth = sample.get('output', '')
         category = sample.get('category', 'unknown')
-        
-        # Format prompt using SEvenLLM's native format: instruction + input
-        # This matches their training and evaluation approach
-        # Format prompt to mirror the original SEvenLLM inference script
-        tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
-        if "qwen" in tokenizer_name:
-            prompt = SEVENLLM_PROMPT_DICT["prompt_input_qwen"].format(
-                instruction=instruction,
-                input=input_text,
-            )
-        else:
-            prompt = SEVENLLM_PROMPT_DICT["prompt_input"].format(
-                instruction=instruction,
-                input=input_text,
-            )
+        prompt = _build_sevenllm_prompt(sample)
 
-        # Generate response
-        response = generate_response(model, tokenizer, prompt, max_new_tokens=2048, task_name="sevenllm", **api_kwargs)
+        if pre_response is not None:
+            response = pre_response
+        else:
+            response = generate_response(model, tokenizer, prompt, max_new_tokens=2000, task_name="sevenllm", **api_kwargs)
         
         # Handle ground_truth - it may be dict or string
         if isinstance(ground_truth, dict):
@@ -1981,21 +2328,33 @@ def main():
     
     # API endpoint options
     parser.add_argument("--use_api", action="store_true", help="Use API endpoint instead of local model")
-    parser.add_argument("--api_endpoint", type=str, help="OpenAI-compatible API endpoint")
-    parser.add_argument("--api_model", type=str, help="Model name for API endpoint")
+    parser.add_argument("--api_endpoint", type=str, help="API endpoint URL")
+    parser.add_argument("--api_model", type=str, help="Model/deployment name for API endpoint")
     parser.add_argument("--api_key", type=str, default="", help="API key if needed")
+    parser.add_argument("--api_type", type=str, default="openai_compat",
+                        choices=["openai_compat", "azure_openai", "azure_claude"],
+                        help=(
+                            "API format to use when --use_api is set. "
+                            "'openai_compat': OpenAI-compatible /chat/completions (default). "
+                            "'azure_openai': Azure OpenAI Responses API (/openai/responses?api-version=...), uses api-key header. "
+                            "'azure_claude': Azure-hosted Claude via Anthropic Messages API (/anthropic/v1/messages), uses x-api-key header."
+                        ))
     
     # vLLM options for fast batch inference
     parser.add_argument("--use_vllm", action="store_true", 
                        help="Use vLLM for fast batch inference (requires vllm package)")
     parser.add_argument("--vllm_gpu_memory_utilization", type=float, default=0.9,
                        help="GPU memory fraction to use with vLLM (0.0-1.0, default: 0.9)")
+    parser.add_argument("--max_model_len", type=int, default=None,
+                       help="Maximum model context length for vLLM (default: model default)")
+    parser.add_argument("--enforce_eager", action="store_true",
+                       help="Disable CUDA graph capture in vLLM (needed for Gemma-4 mixed attention)")
     parser.add_argument("--batch_size", type=int, default=16,
                        help="Batch size for vLLM inference (default: 16)")
     
     # Collection options
     parser.add_argument("--tasks", nargs="+", default=["mcq", "rcm", "vsp", "ate"], 
-                       help="Tasks to collect: mcq, rcm, vsp, ate, cti_taa, ckt, rms, taa, mmlu-cs, secure_maet, secure_cwet, secure_kcv, secbench, redsage_frameworks, redsage_generals, redsage_skills, redsage_cli, redsage_kali, cybermetric, seceval, cissp, sevenllm. Note: cti_taa is CTI-Bench TAA (50 items), taa is AthenaBench TAA (100 items), sevenllm is SEvenLLM-Bench English samples (650 items)")
+                       help="Tasks to collect: mcq, rcm, vsp, ate, cti_taa, ckt, rms, taa, mmlu-cs, secure_maet, secure_cwet, secure_kcv, secbench, redsage_frameworks, redsage_generals, redsage_skills, redsage_cli, redsage_kali, cybermetric, cybermetric_paper, seceval, cissp, sevenllm. Note: cybermetric uses temp=0 (deterministic); cybermetric_paper uses temp=1.0+top_p=0.9 (CSR'24 paper). cti_taa is CTI-Bench TAA (50 items), taa is AthenaBench TAA (100 items), sevenllm is SEvenLLM-Bench English samples (650 items)")
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory for JSONL files")
     parser.add_argument("--max_samples", type=int, default=None, help="Limit samples per task (for testing)")
     
@@ -2018,9 +2377,11 @@ def main():
         if not args.model_path:
             parser.error("--model_path is required for vLLM inference")
         vllm_model = initialize_vllm(
-            args.model_path, 
+            args.model_path,
             args.base_model,
-            args.vllm_gpu_memory_utilization
+            args.vllm_gpu_memory_utilization,
+            max_model_len=args.max_model_len,
+            enforce_eager=args.enforce_eager,
         )
         model = None
         tokenizer = None
@@ -2071,7 +2432,8 @@ def main():
         'batch_size': args.batch_size,
         'api_endpoint': args.api_endpoint,
         'api_model': args.api_model,
-        'api_key': args.api_key
+        'api_key': args.api_key,
+        'api_type': args.api_type,
     }
     
     # Task configurations
@@ -2087,10 +2449,10 @@ def main():
 
         # AthenaBench GitHub JSONL tasks
         "ckt": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-ckt-3k.jsonl", "athenabench_ckt"),
-        "ate_athena": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-ate.jsonl", "athenabench_ate"),
-        "rcm_athena": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-rcm.jsonl", "athenabench_rcm"),
+        "athena_ate": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-ate.jsonl", "athenabench_ate"),
+        "athena_rcm": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-rcm.jsonl", "athenabench_rcm"),
         "rms": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-rms.jsonl", "athenabench_rms"),
-        "vsp_athena": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-vsp.jsonl", "athenabench_vsp"),
+        "athena_vsp": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-vsp.jsonl", "athenabench_vsp"),
         "taa": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-taa.jsonl", "athenabench_taa"),
 
         # Other HuggingFace benchmarks
@@ -2113,7 +2475,14 @@ def main():
     
     for task_name in args.tasks:
         output_file = os.path.join(args.output_dir, f"{task_name}_responses.jsonl")
-        
+
+        # Resume: skip tasks that already have a non-empty output file.
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            existing = sum(1 for _ in open(output_file))
+            print(f"\n[RESUME] {task_name}: {existing} rows already in {output_file} — skipping.")
+            summary[task_name] = {"samples_collected": existing, "output_file": output_file, "resumed": True}
+            continue
+
         try:
             if task_name in task_map:
                 # Handle mapped tasks based on type
@@ -2218,7 +2587,10 @@ def main():
                                        args.max_samples, **api_kwargs)
             elif task_name == "cybermetric":
                 count = collect_cybermetric(model, tokenizer, output_file,
-                                        args.max_samples, **api_kwargs)
+                                        args.max_samples, paper_mode=False, **api_kwargs)
+            elif task_name == "cybermetric_paper":
+                count = collect_cybermetric(model, tokenizer, output_file,
+                                        args.max_samples, paper_mode=True, **api_kwargs)
             elif task_name == "cissp":
                 count = collect_cissp(model, tokenizer, output_file, args.cissp_path,
                                      args.max_samples, **api_kwargs)
