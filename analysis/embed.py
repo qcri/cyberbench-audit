@@ -76,7 +76,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="BAAI/bge-base-en-v1.5")
     parser.add_argument("--task", default=None,
-                       help="Embed only this task (default: all 22).")
+                       help=f"Embed only this task (default: all {len(TASK_ORDER)}).")
     parser.add_argument("--batch-size", type=int, default=64)
     args = parser.parse_args()
 

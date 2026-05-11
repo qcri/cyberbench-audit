@@ -37,10 +37,13 @@ THRESHOLD_LABELS = ["2/6 (33%)", "3/6 (50%)", "4/6 (67%)", "5/6 (83%)", "6/6 (10
 # Tasks where prediction is a letter or set of letters (A-D)
 MCQ_TASKS = {
     "mcq", "cybermetric", "mmlu_cs", "mmlu-cs", "seceval", "secbench",
-    "secure_maet", "secure_cwet", "secure_kcv",
+    "secure_maet", "secure_cwet",
     "ckt", "redsage_frameworks", "redsage_generals", "redsage_kali",
     "redsage_cli", "redsage_skills",
 }
+
+# True/False/X — secure_kcv uses single-letter T/F/X labels, not A-D.
+TFX_TASKS = {"secure_kcv"}
 
 # Tasks where prediction is extracted IDs (T#### or M####)
 ID_TASKS = {"ate", "athena_ate", "rms"}
@@ -82,6 +85,13 @@ def extract_mitigation_ids(text: str) -> frozenset:
     return extract_ids(text, r'M\d{4}')
 
 
+def extract_tfx_answer(response: str) -> str:
+    """Extract T/F/X label from SECURE-KCV response. Returns last T, F, or X found."""
+    response = strip_think(response)
+    matches = re.findall(r'\b([TFXtfx])\b', response)
+    return matches[-1].upper() if matches else ""
+
+
 def extract_cvss_vector(text: str) -> str:
     """Extract CVSS v3 vector string."""
     text = strip_think(text)
@@ -96,6 +106,9 @@ def normalize_gold(gold: str, task: str) -> str:
     if task in MCQ_TASKS:
         letters = sorted(set(re.findall(r'[A-Da-d]', gold)))
         return "".join(l.upper() for l in letters)
+    if task in TFX_TASKS:
+        g = gold.strip().upper()
+        return g[0] if g and g[0] in {"T", "F", "X"} else ""
     return gold.strip()
 
 
@@ -108,6 +121,10 @@ def extract_prediction(response: str, task: str) -> Optional[str]:
 
     if task in MCQ_TASKS:
         pred = extract_mcq_answer(response)
+        return pred if pred else None
+
+    elif task in TFX_TASKS:
+        pred = extract_tfx_answer(response)
         return pred if pred else None
 
     elif task in ID_TASKS:
@@ -215,7 +232,7 @@ def analyze_task(task: str, responses_root: str, models: list) -> dict:
 
         # Flag if majority prediction differs from gold
         if most_common_pred != gold:
-            agreement_frac = most_common_count / n_models
+            agreement_frac = most_common_count / len(predictions)
             agreeing_models = [m for m, p in predictions.items() if p == most_common_pred]
             all_preds = dict(predictions)
 

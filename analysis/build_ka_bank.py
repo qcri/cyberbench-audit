@@ -1,6 +1,6 @@
 """Build the stratified K/A classification sample bank.
 
-For each of 22 sub-tasks, sample 100 questions uniformly at random (seed=0)
+For each of 24 sub-tasks, sample 100 questions uniformly at random (seed=0)
 from the full responses file (any one model — prompts are model-invariant).
 Save to analysis/reports/coverage/sample_bank.jsonl with fields
 {task, index, question}, where `question` is the boilerplate-stripped prompt.

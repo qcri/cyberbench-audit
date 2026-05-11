@@ -99,7 +99,7 @@ def plot_per_model_average():
     ax.invert_yaxis()
     ax.set_xlabel("Macro-average accuracy")
     ax.set_xlim(0, max(vals) * 1.15)
-    ax.set_title("Models ranked by mean accuracy across 22 sub-tasks")
+    ax.set_title("Models ranked by mean accuracy across 24 sub-tasks")
     for bar, v in zip(bars, vals):
         ax.text(v + 0.005, bar.get_y() + bar.get_height() / 2, f"{v:.3f}",
                 va="center", fontsize=8)

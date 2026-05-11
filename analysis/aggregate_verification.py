@@ -21,8 +21,8 @@ HERE = Path(__file__).resolve().parent
 VERIF_DIR = HERE / "reports" / "verification"
 BANK_PATH = VERIF_DIR / "flagged_bank.jsonl"
 
-THRESHOLDS = [1.00, 0.90, 5/6, 0.75]
-THRESH_LABEL = {1.00: "1.000", 0.90: "0.900", 5/6: "0.833", 0.75: "0.750"}
+THRESHOLDS = [1.00, 0.90, 5/6, 0.75, 0.50]
+THRESH_LABEL = {1.00: "1.000", 0.90: "0.900", 5/6: "0.833", 0.75: "0.750", 0.50: "0.500"}
 VERDICTS = ["gold_correct", "majority_correct", "both_wrong", "uncertain"]
 
 

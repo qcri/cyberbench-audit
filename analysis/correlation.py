@@ -1,4 +1,4 @@
-"""Cross-task correlation analysis on the 22 x 10 accuracy matrix.
+"""Cross-task correlation analysis on the 24 x 10 accuracy matrix.
 
 Outputs to analysis/reports/correlation/:
   - pairwise_kendall.csv / pairwise_spearman.csv / pairwise_pearson.csv
@@ -332,9 +332,10 @@ def main(argv=None):
             print(f"chunk {args.chunk_idx}/{args.n_chunks}: {len(rows)} pairs")
             return
         # Resumable per-pair mode with a 3-second budget so we fit the bash
-        # limit. Re-run repeatedly until 231 pairs are done.
+        # limit. Re-run repeatedly until all pairs are done.
+        n_pairs = len(tasks) * (len(tasks) - 1) // 2
         rows = stage_bootstrap(M, tasks, time_budget_s=2.0)
-        print(f"bootstrap progress: {len(rows)}/231 pairs")
+        print(f"bootstrap progress: {len(rows)}/{n_pairs} pairs")
         return
     if args.stage == "postprocess":
         pairs = collect_bootstrap()

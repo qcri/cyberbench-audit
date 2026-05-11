@@ -251,6 +251,12 @@ def generate_response(model, tokenizer, prompt: str, max_new_tokens: int = 1024,
         if api_style == "anthropic_messages":
             return anthropic_messages_api(api_endpoint, api_model, prompt, api_key, max_new_tokens)
 
+        if api_style not in ("chat_completions", "azure_responses"):
+            raise ValueError(
+                f"Unsupported api_style for generate_response: {api_style!r}. "
+                f"Supported: 'chat_completions', 'anthropic_messages'."
+            )
+
         # Get API version from parameter or environment variable
         if api_version is None:
             api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")

@@ -95,9 +95,9 @@ MODELS = [
         model_path="gpt-4.1",
         is_base=False,
         use_api=True,
-        api_endpoint="https://qcri-cyber-cx-ai-03-eus2.openai.azure.com/openai/responses?api-version=2025-04-01-preview",
-        api_style="azure_responses",
-        description="GPT-5.4 deployed on Azure (Responses API)"
+        api_endpoint="https://qcri-cyber-cx-ai-03-eus2.openai.azure.com/",
+        api_style="chat_completions",
+        description="GPT-5.4 deployed on Azure (Chat Completions API)"
     ),
 
     # ── Open-source models (new) ───────────────────────────────────────────────
@@ -181,7 +181,7 @@ def run_inference_for_model(model_config: ModelConfig, subset: bool = False) -> 
         # SECURE (3)
         "secure_maet", "secure_cwet", "secure_kcv",
         # Other benchmarks
-        "seceval", "cybermetric", "mmlu-cs", "secbench",
+        "seceval", "cybermetric", "mmlu-cs", "secbench", "cissp",
         # RedSage-MCQ (5)
         "redsage_frameworks", "redsage_generals", "redsage_skills",
         "redsage_cli", "redsage_kali",

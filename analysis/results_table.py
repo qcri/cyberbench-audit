@@ -99,13 +99,10 @@ def cell_accuracy(model: str, task: str) -> Tuple[Optional[float], str, int]:
         votes = [per_judge[v][idx] for v in JUDGE_VERSIONS if idx in per_judge[v]]
         if not votes:
             continue
-        # majority — odd count = strict majority; tied even count → CORRECT only
-        # if at least half are correct (i.e., strict-majority-with-tiebreak-true
-        # is sensible since "correct" is the harder claim — we err on the side
-        # of trusting any judge that says correct).
-        # In practice we'll usually have 1 or 2 verdicts (most cells have only
-        # def+v1; v2 only adds for 5 models on shared tasks).
-        if sum(votes) * 2 >= len(votes):
+        # Strict majority: more than half of contributing judges must say CORRECT.
+        # Ties (e.g., 1 correct / 1 incorrect with 2 judges) are not counted as
+        # correct — tied evidence should not inflate accuracy.
+        if sum(votes) * 2 > len(votes):
             correct += 1
     n = len(all_idx)
 

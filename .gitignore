@@ -19,6 +19,7 @@ build/
 eggs/
 .eggs/
 lib/
+!analysis/lib/
 lib64/
 parts/
 sdist/

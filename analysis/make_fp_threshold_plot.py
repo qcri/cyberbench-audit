@@ -94,11 +94,12 @@ def main():
     aud_pct = []
     aud_labels = []
     for x, (n_ver, n_fp, pct) in fp.items():
-        # Some τ values (0.8333) are not in the sweep grid; skip if not present.
-        if x not in thr:
+        # Use tolerance-based membership: float repr of 5/6 may differ from CSV.
+        idx = next((i for i, t in enumerate(thr) if abs(t - x) < 1e-4), None)
+        if idx is None:
             continue
         aud_thr.append(x)
-        y = totals[thr.index(x)]
+        y = totals[idx]
         aud_y.append(y)
         aud_pct.append(pct)
         if abs(x - 0.5) < 1e-6:

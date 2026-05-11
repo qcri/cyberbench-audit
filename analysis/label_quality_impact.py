@@ -35,7 +35,7 @@ from analysis.lib.loaders import (
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parent
 OUTPUTS_ROOT = PROJECT_ROOT / "outputs"
-VERDICTS_DIR = HERE / "reports" / "verification" / "verdicts" / "search"
+VERDICTS_DIR = HERE / "reports" / "verification" / "verdicts" / "direct"
 REPORTS_DIR = HERE / "reports" / "label_quality_impact"
 
 # Verdict categories to drop from the denominator. `gold_correct` is kept

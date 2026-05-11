@@ -4,23 +4,33 @@
 #
 # Usage:
 #   bash run_judge_all_models.sh [--workers N]
-#   AZURE_API_KEY is loaded automatically from .env
+#   AZURE_API_KEY and AZURE_JUDGE_ENDPOINT are loaded automatically from .env
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON=/export/home/aberriche/miniconda3/envs/vllm/bin/python
 
-AZURE_JUDGE_ENDPOINT="https://qcri-cyber-cx-ai-03-eus2.openai.azure.com/"
 AZURE_JUDGE_MODEL="gpt-5.4"
-N_WORKERS="${1:-12}"
+N_WORKERS=12
 
-# Load API key from .env if not already in environment
-if [ -z "${AZURE_API_KEY:-}" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+# Parse flags
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --workers) N_WORKERS="$2"; shift 2 ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+
+# Load config (API key + endpoint) from .env if not already in environment
+if [ -f "$SCRIPT_DIR/.env" ]; then
     set -a
     source "$SCRIPT_DIR/.env"
     set +a
 fi
+
+# Endpoint can be set in .env as AZURE_JUDGE_ENDPOINT; fallback to the default resource.
+AZURE_JUDGE_ENDPOINT="${AZURE_JUDGE_ENDPOINT:-https://qcri-cyber-cx-ai-03-eus2.openai.azure.com/}"
 
 if [ -z "${AZURE_API_KEY:-}" ]; then
     echo "ERROR: AZURE_API_KEY not set and not found in .env"
@@ -66,11 +76,10 @@ for MODEL in "${MODELS[@]}"; do
     mkdir -p "$JUDGE_DIR"
 
     $PYTHON "$SCRIPT_DIR/run_evaluate_llm_judge.py" \
-        --response_dir  "$RESPONSE_DIR" \
+        --response_dir       "$RESPONSE_DIR" \
         --judge_use_api \
         --judge_api_endpoint "$AZURE_JUDGE_ENDPOINT" \
         --judge_api_model    "$AZURE_JUDGE_MODEL" \
-        --judge_api_key      "${AZURE_API_KEY}" \
         --n_workers          "$N_WORKERS" \
         --output             "$JUDGE_DIR/eval_results"
 
