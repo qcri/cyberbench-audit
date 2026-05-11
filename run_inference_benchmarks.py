@@ -4,18 +4,21 @@ Collect raw LLM responses from cybersecurity benchmarks without evaluation.
 Responses are saved in JSONL format for later evaluation (regex or LLM judge).
 
 Supported benchmarks:
-- CTI-Bench (RISys-Lab): MCQ, RCM, VSP, ATE
+- CTI-Bench (RISys-Lab HF): MCQ, RCM, VSP, ATE
+- CTI-Bench (maveryn TSV): cti_taa
 - MMLU Computer Security
 - SECURE: MAET, CWET, KCV
 - SecBench
 - RedSageMCQ: 5 subsets (Frameworks, Generals, Skills, CLI, Kali)
 - CyberMetric-500
-- AthenaBench (GitHub JSONL): CKT, RMS, TAA
+- AthenaBench (GitHub JSONL): CKT, RMS, TAA, athena_ate, athena_rcm, athena_vsp
 - SecEval
 - CISSP
+- SEvenLLM-Bench (English subset, structured CTI extraction)
 """
 
 import os
+import re
 import json
 import torch
 import requests
@@ -41,6 +44,66 @@ try:
     HAS_VLLM = True
 except ImportError:
     HAS_VLLM = False
+
+
+# SEvenLLM-Bench prompt template (Stanford-Alpaca-style instruction/input wrapper)
+# Used by collect_sevenllm. Qwen variant adds chat-template tokens since SEvenLLM
+# was originally fine-tuned on this exact format.
+SEVENLLM_PROMPT_DICT = {
+    "prompt_input": (
+        "Below is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
+    ),
+    "prompt_input_qwen": (
+        "<|im_start|>user\nBelow is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Input:\n{input}### Response:<|im_end|>\n<|im_start|>assistant\n"
+    ),
+}
+
+# CJK Unified Ideographs range — used to filter SEvenLLM English vs Chinese samples
+_CHINESE_CHAR_RE = re.compile(r"[一-鿿]")
+
+
+def is_non_chinese_sample(text: str) -> bool:
+    """Return True if text contains no CJK ideographs.
+
+    SEvenLLM-Bench is bilingual (650 EN + 650 ZH); we filter on the *input*
+    field since some instructions are templated and may share wording.
+    """
+    return not bool(_CHINESE_CHAR_RE.search(text or ""))
+
+
+def load_tsv_dataset(source: str) -> Dataset:
+    """Load a TSV file (URL or local path) into a HuggingFace Dataset.
+
+    Used for CTI-Bench tasks (the maveryn/cti-bench repo serves TSV files
+    directly; not all subsets are mirrored on the RISys-Lab HF dataset).
+    """
+    if source.startswith("http://") or source.startswith("https://"):
+        resp = requests.get(source, timeout=60)
+        resp.raise_for_status()
+        text = resp.text
+    else:
+        with open(source, "r", encoding="utf-8") as f:
+            text = f.read()
+
+    # Manual TSV parse: first line = header, subsequent = rows. We avoid pandas
+    # to keep dependencies minimal and to mirror the existing JSONL collector.
+    lines = text.splitlines()
+    if not lines:
+        return Dataset.from_list([])
+    header = lines[0].split("\t")
+    rows = []
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < len(header):
+            parts = parts + [""] * (len(header) - len(parts))
+        rows.append(dict(zip(header, parts[:len(header)])))
+    return Dataset.from_list(rows)
 
 
 def get_task_type(task_name: str) -> str:
@@ -79,6 +142,9 @@ def get_task_type(task_name: str) -> str:
         "rms": "rms",  # Risk mitigation strategies
         "taa": "taa",  # Threat actor attribution (AthenaBench)
         "cti_taa": "taa",  # Threat actor attribution (CTI-Bench)
+
+        # SEvenLLM-Bench (multi-category structured CTI extraction)
+        "sevenllm": "sevenllm",
     }
     return task_type_map.get(task_name, "mcq")  # Default to MCQ
 
@@ -210,6 +276,27 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
             messages.append({"role": "user", "content": prompt})
 
     if use_api:
+        if api_style == "anthropic_messages":
+            # Azure-pass-through Anthropic messages API (e.g. claude on Azure).
+            # Reuse evaluate.anthropic_messages_api for retry/error semantics.
+            from evaluate import anthropic_messages_api as _anthropic
+            anth_prompt = prompt
+            if anth_prompt is None and messages:
+                # Concatenate user-content into a single prompt; system msgs ignored
+                # (anthropic separates system from messages — this collector path
+                # doesn't currently use system prompts).
+                anth_prompt = "\n\n".join(
+                    m.get("content", "") for m in messages if m.get("role") == "user"
+                )
+            return _anthropic(
+                api_endpoint,
+                api_model,
+                anth_prompt or "",
+                api_key=api_key,
+                max_tokens=max_new_tokens,
+                temperature=0.0,
+            )
+
         return chat_completion_api(
             api_endpoint,
             api_model,
@@ -638,6 +725,223 @@ def collect_athenabench_jsonl(task_name: str, jsonl_url: str,
     return len(results)
 
 
+def collect_ctibench_tsv(task_name: str, tsv_url: str,
+                         model, tokenizer, output_file: str, max_samples: int = None,
+                         max_new_tokens: int = 1024, **api_kwargs):
+    """Collect responses from CTI-Bench TSV tasks (e.g. cti_taa).
+
+    The maveryn/cti-bench repo serves the original benchmark as TSV files.
+    Some subsets (taa) are not mirrored on the RISys-Lab HF dataset, so we
+    pull them directly. Each TSV has columns including `Prompt` and `GT`.
+    The Prompt column is already fully formatted by the benchmark authors —
+    we use it as-is (no choice-letter scaffolding).
+    """
+    print(f"\n{'='*70}")
+    print(f"Collecting {task_name.upper()} responses")
+    print(f"TSV source: {tsv_url}")
+    print(f"{'='*70}")
+
+    dataset = load_tsv_dataset(tsv_url)
+
+    if max_samples:
+        dataset = dataset.select(range(min(max_samples, len(dataset))))
+
+    print(f"Total samples: {len(dataset)}")
+
+    if len(dataset) == 0:
+        print(f"WARNING: empty dataset for {task_name}")
+        with open(output_file, "w") as f:
+            pass
+        return 0
+
+    cols = dataset.column_names
+    if "Prompt" not in cols:
+        raise ValueError(
+            f"CTI-Bench TSV missing 'Prompt' column for {task_name}: cols={cols}"
+        )
+    # Some CTI-Bench subsets (notably cti-taa) ship without a GT column —
+    # the answer key lives separately in the evaluation notebook. We collect
+    # responses anyway and note the missing GT in metadata.
+    gt_col = "GT" if "GT" in cols else ("Solution" if "Solution" in cols else None)
+
+    # ── Pass 1: build prompts and metadata ────────────────────────────────────
+    prompts_list = []
+    meta_list = []
+
+    for idx, sample in enumerate(dataset):
+        prompt = sample.get("Prompt", "").strip()
+        ground_truth = str(sample.get(gt_col, "")).strip() if gt_col else ""
+        if not prompt:
+            continue
+
+        metadata = {
+            "dataset": "maveryn/cti-bench",
+            "source": tsv_url,
+            "sample_id": idx,
+            "task_type": get_task_type(task_name),
+            "prompt_mode": "original_prompt_column",
+        }
+        if gt_col is None:
+            metadata["ground_truth_note"] = (
+                "TSV does not publish ground-truth answers — the upstream "
+                "CTI-Bench evaluation notebook holds the answer key. "
+                "ground_truth is intentionally empty."
+            )
+        # Preserve other TSV columns for traceability
+        skip_cols = {"Prompt"} | ({gt_col} if gt_col else set())
+        original_fields = {k: sample.get(k, "") for k in cols if k not in skip_cols}
+        if original_fields:
+            metadata["original_fields"] = original_fields
+
+        prompts_list.append(prompt)
+        meta_list.append((ground_truth, metadata))
+
+    print(f"Prompts built: {len(prompts_list)}")
+
+    # ── Pass 2: batch generate ────────────────────────────────────────────────
+    responses = batch_generate(
+        prompts_list, tokenizer, max_new_tokens,
+        model=model, **api_kwargs
+    )
+
+    # ── Pass 3: assemble and save ─────────────────────────────────────────────
+    results = []
+    for idx, (prompt, (ground_truth, metadata), response) in enumerate(
+        zip(prompts_list, meta_list, responses)
+    ):
+        results.append({
+            "task": task_name,
+            "index": idx,
+            "prompt": prompt,
+            "ground_truth": ground_truth,
+            "model_response": response,
+            "metadata": metadata,
+        })
+
+    with open(output_file, "w") as f:
+        for result in results:
+            f.write(json.dumps(result) + "\n")
+
+    print(f"✓ Saved {len(results)} responses to: {output_file}")
+    return len(results)
+
+
+def collect_sevenllm(model, tokenizer, output_file: str, max_samples: int = None,
+                     max_new_tokens: int = 2000, **api_kwargs):
+    """Collect responses from SEvenLLM-Bench (English samples only).
+
+    SEvenLLM-Bench is a 23-category structured CTI extraction benchmark with
+    1300 bilingual samples (650 EN + 650 ZH). We filter to non-Chinese inputs
+    so the judge can use a single English prompt.
+
+    Dataset: Multilingual-Multimodal-NLP/SEVENLLM-Dataset (HuggingFace)
+    Default max_new_tokens=2000 reflects the open-ended JSON outputs; override
+    via the calibration JSON for tighter budgets if needed.
+    """
+    from huggingface_hub import hf_hub_download
+
+    print(f"\n{'='*70}")
+    print("Collecting SEVENLLM responses (English-only filter)")
+    print("Dataset: Multilingual-Multimodal-NLP/SEVENLLM-Dataset")
+    print(f"{'='*70}")
+
+    # The HF auto-loader fails on this dataset (mixed output types across rows),
+    # so we download test.jsonl directly and parse it.
+    file_path = hf_hub_download(
+        repo_id="Multilingual-Multimodal-NLP/SEVENLLM-Dataset",
+        filename="test.jsonl",
+        repo_type="dataset",
+    )
+
+    samples = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                samples.append(json.loads(line))
+    print(f"Total samples in dataset: {len(samples)}")
+
+    english_samples = [s for s in samples if is_non_chinese_sample(s.get("input", ""))]
+    print(f"Non-Chinese samples: {len(english_samples)}")
+
+    if max_samples:
+        english_samples = english_samples[:max_samples]
+    print(f"Samples to process: {len(english_samples)}")
+
+    # SEvenLLM was fine-tuned on a Stanford-Alpaca-style template; pick the
+    # Qwen-flavored variant when the tokenizer is Qwen-based.
+    tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+    template_key = "prompt_input_qwen" if "qwen" in tokenizer_name else "prompt_input"
+    template = SEVENLLM_PROMPT_DICT[template_key]
+
+    # ── Pass 1: build prompts ────────────────────────────────────────────────
+    prompts_list = []
+    meta_list = []  # (ground_truth, metadata) per sample
+
+    for idx, sample in enumerate(english_samples):
+        instruction = sample.get("instruction", "")
+        input_text = sample.get("input", "")
+        gt = sample.get("output", "")
+        if isinstance(gt, (dict, list)):
+            ground_truth = json.dumps(gt, ensure_ascii=False)
+        else:
+            ground_truth = str(gt)
+        category = sample.get("category", "unknown")
+
+        prompt = template.format(instruction=instruction, input=input_text)
+
+        metadata = {
+            "dataset": "Multilingual-Multimodal-NLP/SEVENLLM-Dataset",
+            "category": category,
+            "instruction": instruction,
+            "input": input_text,            # judge needs this for context
+            "task_type": get_task_type("sevenllm"),
+            "prompt_template": template_key,
+        }
+
+        prompts_list.append(prompt)
+        meta_list.append((ground_truth, metadata))
+
+    print(f"Prompts built: {len(prompts_list)}")
+
+    # ── Pass 2: batch generate ───────────────────────────────────────────────
+    responses = batch_generate(
+        prompts_list, tokenizer, max_new_tokens,
+        model=model, **api_kwargs
+    )
+
+    # ── Pass 3: assemble and save ────────────────────────────────────────────
+    results = []
+    for idx, (prompt, (ground_truth, metadata), response) in enumerate(
+        zip(prompts_list, meta_list, responses)
+    ):
+        results.append({
+            "task": "sevenllm",
+            "index": idx,
+            "prompt": prompt,
+            "ground_truth": ground_truth,
+            "model_response": response,
+            "metadata": metadata,
+        })
+
+    with open(output_file, "w") as f:
+        for r in results:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    # Per-category sanity print (helpful for debugging coverage)
+    cat_counts = {}
+    for r in results:
+        c = r["metadata"]["category"]
+        cat_counts[c] = cat_counts.get(c, 0) + 1
+    print(f"\nCategory distribution ({len(cat_counts)} categories):")
+    for cat, n in sorted(cat_counts.items(), key=lambda x: -x[1])[:10]:
+        print(f"  {cat}: {n}")
+    if len(cat_counts) > 10:
+        print(f"  ... and {len(cat_counts) - 10} more")
+
+    print(f"✓ Saved {len(results)} responses to: {output_file}")
+    return len(results)
+
+
 def collect_mmlu_cs(model, tokenizer, output_file: str, max_samples: int = None,
                    max_new_tokens: int = 1024, **api_kwargs):
     """Collect responses from MMLU Computer Security using the official 5-shot format.
@@ -1043,9 +1347,10 @@ def main():
     parser.add_argument("--api_model", type=str, help="Model name for API endpoint")
     parser.add_argument("--api_key", type=str, default="", help="API key if needed")
     parser.add_argument("--api_style", type=str, default="chat_completions",
-                       choices=["chat_completions", "azure_responses"],
-                       help="API request format: 'chat_completions' (default, OpenAI-compatible) "
-                            "or 'azure_responses' (Azure OpenAI /openai/responses endpoint)")
+                       choices=["chat_completions", "azure_responses", "anthropic_messages"],
+                       help="API request format: 'chat_completions' (default, OpenAI-compatible), "
+                            "'azure_responses' (Azure OpenAI /openai/responses), or "
+                            "'anthropic_messages' (Anthropic /v1/messages, e.g. Azure pass-through to Claude).")
     parser.add_argument("--n_api_workers", type=int, default=8,
                        help="Number of parallel API workers for --use_api mode (default: 8)")
     parser.add_argument("--skip_completed", action="store_true",
@@ -1074,9 +1379,10 @@ def main():
                             "ckt, rms, taa, athena_ate, athena_rcm, athena_vsp, "
                             "mmlu-cs, secure_maet, secure_cwet, secure_kcv, secbench, "
                             "redsage_frameworks, redsage_generals, redsage_skills, "
-                            "redsage_cli, redsage_kali, cybermetric, seceval, cissp. "
-                            "Note: cti_taa=CTI-Bench TAA (50 items), taa=AthenaBench TAA (100 items), "
-                            "athena_ate/rcm/vsp=AthenaBench expanded extraction tasks.")
+                            "redsage_cli, redsage_kali, cybermetric, seceval, cissp, sevenllm. "
+                            "Note: cti_taa=CTI-Bench TAA (50 items, TSV), taa=AthenaBench TAA (100 items, JSONL), "
+                            "athena_ate/rcm/vsp=AthenaBench expanded extraction tasks, "
+                            "sevenllm=SEvenLLM-Bench English subset (~650 items, structured JSON extraction).")
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory for JSONL files")
     parser.add_argument("--max_samples", type=int, default=None, help="Limit samples per task (for testing)")
     parser.add_argument("--max_tokens_config", type=str, default=None,
@@ -1191,8 +1497,9 @@ def main():
         "rcm": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-rcm"),
         "vsp": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-vsp"),
         "ate": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-ate"),
-        # cti_taa: not available in RISys-Lab HF mirror (only ate/mcq/rcm/vsp); use AthenaBench taa instead
-        
+        # cti_taa: not in the RISys-Lab HF mirror; pull the original TSV from maveryn/cti-bench
+        "cti_taa": ("tsv", "https://raw.githubusercontent.com/maveryn/cti-bench/main/data/cti-taa.tsv", None),
+
         # Other HuggingFace benchmarks
         "mmlu-cs": ("hf", "lighteval/mmlu", "computer_security"),
         "secure_maet": ("hf", "RISys-Lab/Benchmarks_CyberSec_SECURE", "MAET"),
@@ -1248,6 +1555,17 @@ def main():
                     count = collect_athenabench_jsonl(task_name, source,
                                                       model, tokenizer, output_file,
                                                       args.max_samples, task_tokens, **api_kwargs)
+                elif task_type == "tsv":
+                    # CTI-Bench original TSV files (e.g. cti_taa)
+                    count = collect_ctibench_tsv(task_name, source,
+                                                 model, tokenizer, output_file,
+                                                 args.max_samples, task_tokens, **api_kwargs)
+            elif task_name == "sevenllm":
+                # SEvenLLM-Bench needs custom prompt template + EN-only filter; default
+                # to 2000 tokens since outputs are open-ended JSON, but allow calibration override
+                sevenllm_tokens = task_max_tokens.get("sevenllm", 2000)
+                count = collect_sevenllm(model, tokenizer, output_file,
+                                         args.max_samples, sevenllm_tokens, **api_kwargs)
             elif task_name == "seceval":
                 count = collect_seceval(model, tokenizer, output_file,
                                        args.max_samples, task_tokens, **api_kwargs)

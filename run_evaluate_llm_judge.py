@@ -189,10 +189,40 @@ def create_judge_prompt(task_type: str, question: str, model_answer: str,
             "the correct answer (case-insensitive; common aliases are equivalent, e.g. "
             "\"APT28\" ≡ \"Fancy Bear\", \"Lazarus\" ≡ \"Lazarus Group\"). Otherwise INCORRECT."
         )
+    elif task_type == "sevenllm":
+        question_block = f"Question:\n{question}"
+        format_hint = (
+            'a concise single-line summary (≤300 chars) of the FACTS the model extracted or '
+            'generated. For information-extraction tasks (JSON output): list the key '
+            'entities/values the model produced as "field: value; field: value" pairs '
+            '(e.g., "Malware: Dridex; capabilities: payload drop, ransomware; evasion: '
+            'password-protected Excel"). For analysis-generation tasks (text output): a '
+            'one-sentence paraphrase of the model\'s main claim. If the model gave no usable '
+            'answer (empty, refusal, garbage), output "NONE".'
+        )
+        compare_rule = (
+            "This is a SEVENLLM cybersecurity information-extraction (JSON output) or "
+            "analysis-generation (text output) task. The instruction shown to the model in the "
+            "Question block specifies which category (e.g. Malware Feature Extraction, Threat "
+            "Analysis, Time Element Acquisition). Compare the extracted answer to the correct "
+            "answer SEMANTICALLY, not by schema or wording:\n"
+            "- The model's JSON schema may legitimately differ from the ground-truth schema "
+            "(different key names, different nesting). What matters is whether the same "
+            "factual entities/values are captured.\n"
+            "- Treat common aliases and abbreviations as equivalent (e.g. \"US\" ≡ \"United "
+            "States\", \"AES-256\" ≡ \"AES\", semantically-similar phrasings).\n"
+            "- Verdict is CORRECT if the model captures the CENTRAL facts of the correct "
+            "answer (main entity, primary list, key claim) with no contradictions on those "
+            "central facts and no major fabricated entities. Missing peripheral details are OK.\n"
+            "- Verdict is INCORRECT if the model misses the central facts, contradicts the "
+            "ground truth on a key entity/value, or hallucinates major entities not supported "
+            "by the source.\n"
+            "Be lenient on phrasing and schema, strict on factual coverage of the central facts."
+        )
     else:
         raise ValueError(
             f"Unknown task_type: {task_type}. Supported: mcq, rcm, vsp, ate, cybermetric, "
-            f"seceval, cissp, mmlu_cs, secure, secbench, ckt, rms, taa"
+            f"seceval, cissp, mmlu_cs, secure, secbench, ckt, rms, taa, sevenllm"
         )
 
     return f"""You are a strict evaluator for a cybersecurity benchmark. Your role has TWO steps.
@@ -589,17 +619,19 @@ def evaluate_with_judge(model, tokenizer, dataset, task_type: str,
                 result["mad"] = mad
             detailed_results.append(result)
     
-    # Unified accuracy metric (judge-determined verdict). VSP additionally reports MAD.
+    # Unified strict-verdict accuracy plus traditional benchmark metrics
+    # (F1 for ATE-family, MAD for VSP-family) computed from extracted_answer.
     accuracy = correct / total if total > 0 else 0.0
     results = {
         "accuracy": accuracy,
         "correct": correct,
         "total": total,
     }
-    if task_type == "vsp":
-        mean_mad = sum(mad_scores) / len(mad_scores) if mad_scores else 10.0
-        results["mad"] = round(mean_mad, 3)
-        results["extraction_success_count"] = extraction_success_count
+    tlow = task_type.lower()
+    if tlow in ("ate", "athena_ate"):
+        results.update(compute_ate_metrics(detailed_results, parent_only=True))
+    elif tlow in ("vsp", "athena_vsp"):
+        results.update(compute_vsp_metrics(detailed_results))
     
     # Save detailed results
     if detailed_output is not None:
@@ -758,7 +790,8 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
                 result["mad"] = mad
             detailed_results.append(result)
 
-    # Unified accuracy metric. VSP additionally reports MAD.
+    # Unified strict-verdict accuracy plus traditional benchmark metrics
+    # (F1 for ATE-family, MAD for VSP-family) computed from extracted_answer.
     accuracy = correct / total if total > 0 else 0.0
     results = {
         "accuracy": accuracy,
@@ -766,10 +799,11 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
         "total": total,
         "skipped": skipped_count,
     }
-    if task_type == "vsp":
-        mean_mad = sum(mad_scores) / len(mad_scores) if mad_scores else 10.0
-        results["mad"] = round(mean_mad, 3)
-        results["extraction_success_count"] = extraction_success_count
+    tlow = task_type.lower()
+    if tlow in ("ate", "athena_ate"):
+        results.update(compute_ate_metrics(detailed_results, parent_only=True))
+    elif tlow in ("vsp", "athena_vsp"):
+        results.update(compute_vsp_metrics(detailed_results))
 
     if skipped_count:
         print(f"  ⚠ {skipped_count} samples skipped (judge API failure — excluded from accuracy)")
@@ -824,6 +858,79 @@ def parse_concatenated_json(content: str) -> List[Dict]:
     return objects
 
 
+# ── Traditional benchmark metric helpers ──────────────────────────────────────
+# These operate on the judge's already-extracted canonical answer strings.
+# No regex extraction here — the judge handled that. We just split/normalize
+# the canonical form (e.g. "T1071,T1083,T1573") and apply benchmark-standard
+# scoring (micro F1 for ATE, MAD for VSP).
+
+def _split_id_set(s: str) -> set:
+    """Split a comma-separated canonical ID list into a normalized set.
+    Handles "NONE", missing values, surrounding whitespace.
+    """
+    if not s or str(s).strip().upper() in ("NONE", ""):
+        return set()
+    return {part.strip().upper() for part in str(s).split(',') if part.strip()}
+
+def _parent_only(id_set: set) -> set:
+    """Strip subtechnique suffix from MITRE technique IDs (T1059.001 → T1059)."""
+    return {tid.split('.')[0] for tid in id_set}
+
+def compute_ate_metrics(records: list, parent_only: bool = True) -> dict:
+    """Micro-averaged precision/recall/F1 + exact-match for ATE-style tasks.
+    Reads `extracted_answer` and `ground_truth` from each record.
+    """
+    tp_total = fp_total = fn_total = 0
+    exact_matches = 0
+    for r in records:
+        if r.get('skipped'):
+            continue
+        pred = _split_id_set(r.get('extracted_answer', ''))
+        gold = _split_id_set(r.get('ground_truth', ''))
+        if parent_only:
+            pred = _parent_only(pred)
+            gold = _parent_only(gold)
+        tp_total += len(pred & gold)
+        fp_total += len(pred - gold)
+        fn_total += len(gold - pred)
+        if pred == gold:
+            exact_matches += 1
+    p = tp_total / (tp_total + fp_total) if (tp_total + fp_total) else 0.0
+    r = tp_total / (tp_total + fn_total) if (tp_total + fn_total) else 0.0
+    f1 = 2 * p * r / (p + r) if (p + r) else 0.0
+    return {
+        "precision": round(p, 4),
+        "recall": round(r, 4),
+        "f1": round(f1, 4),
+        "exact_matches": exact_matches,
+        "tp_total": tp_total,
+        "fp_total": fp_total,
+        "fn_total": fn_total,
+    }
+
+def compute_vsp_metrics(records: list) -> dict:
+    """Mean Absolute Deviation between extracted CVSS vectors and ground truth.
+    Failed extractions ("NONE") get max penalty 10.0.
+    """
+    mads = []
+    extraction_success = 0
+    for r in records:
+        if r.get('skipped'):
+            continue
+        ext = r.get('extracted_answer', '') or ''
+        if ext and ext.upper() != "NONE":
+            mad = calculate_vsp_mad(ext, r.get('ground_truth', ''))
+            extraction_success += 1
+        else:
+            mad = 10.0
+        mads.append(mad)
+    mean_mad = sum(mads) / len(mads) if mads else 10.0
+    return {
+        "mad": round(mean_mad, 3),
+        "extraction_success": extraction_success,
+    }
+
+
 def generate_summary_from_detailed(detailed_dir: str) -> Dict[str, Any]:
     """Generate summary from detailed JSONL results.
     
@@ -859,22 +966,26 @@ def generate_summary_from_detailed(detailed_dir: str) -> Dict[str, Any]:
         total = len(objects)
 
         # Unified path: is_correct is present (set by judge verdict).
-        # VSP additionally reports MAD as a secondary continuous metric.
+        # We layer traditional benchmark metrics (F1 for ATE, MAD for VSP) on
+        # top of the strict verdict-accuracy, computed from extracted_answer.
         if 'is_correct' in objects[0]:
             skipped = sum(1 for o in objects if o.get('skipped'))
             evaluated = total - skipped
             correct = sum(1 for o in objects if o.get('is_correct') and not o.get('skipped'))
             task_metrics = {
-                'accuracy': correct / evaluated if evaluated > 0 else 0,
+                'accuracy': correct / evaluated if evaluated > 0 else 0,  # strict verdict
                 'correct': correct,
                 'total': evaluated,
                 'skipped': skipped,
             }
-            if 'mad' in objects[0]:  # VSP secondary metric
-                mads = [o.get('mad', 10.0) for o in objects if not o.get('skipped')]
-                if mads:
-                    task_metrics['mean_mad'] = round(sum(mads) / len(mads), 3)
-                task_metrics['extraction_success'] = sum(1 for o in objects if o.get('extracted_answer') and o.get('extracted_answer').upper() != 'NONE')
+
+            # Traditional metrics from extracted_answer (no regex — judge canonicalized).
+            tlow = task.lower()
+            if tlow in ('ate', 'athena_ate'):
+                task_metrics.update(compute_ate_metrics(objects, parent_only=True))
+            elif tlow in ('vsp', 'athena_vsp'):
+                task_metrics.update(compute_vsp_metrics(objects))
+
             summary['tasks'][task.upper()] = task_metrics
             summary['total_correct'] += correct
             summary['total_samples'] += evaluated
@@ -996,8 +1107,8 @@ def main():
     parser.add_argument("--n_workers", type=int, default=20,
                        help="Parallel API worker threads for judging (default: 20)")
     parser.add_argument("--judge_api_style", type=str, default="chat_completions",
-                       choices=["chat_completions", "azure_responses"],
-                       help="API style for judge: 'chat_completions' (default) or 'azure_responses' (GPT-5.4 / Azure Responses API)")
+                       choices=["chat_completions", "azure_responses", "anthropic_messages"],
+                       help="API style for judge: 'chat_completions' (Azure OpenAI), 'azure_responses' (GPT-5.4 Responses API), or 'anthropic_messages' (Azure Anthropic /v1/messages)")
     
     # vLLM options for judge
     parser.add_argument("--judge_use_vllm", action="store_true",
@@ -1114,11 +1225,17 @@ def main():
         'api_key': args.api_key
     }
     
+    # Pick the right env-var default based on api_style so a stale --judge_api_key
+    # doesn't silently fall back to the wrong key (e.g. OpenAI key for a Claude run).
+    if args.judge_api_style == "anthropic_messages":
+        _default_key = os.getenv("AZURE_CLAUDE_KEY", "")
+    else:
+        _default_key = os.getenv("AZURE_API_KEY", "")
     judge_api_kwargs = {
         'use_api': args.judge_use_api,
         'api_endpoint': args.judge_api_endpoint,
         'api_model': args.judge_api_model,
-        'api_key': args.judge_api_key or os.getenv("AZURE_API_KEY", ""),
+        'api_key': args.judge_api_key or _default_key,
         'api_style': args.judge_api_style,
         'n_workers': args.n_workers,
     }
@@ -1239,6 +1356,10 @@ def main():
             # Read task_type from first response's metadata if available
             if responses and 'metadata' in responses[0] and 'task_type' in responses[0]['metadata']:
                 judge_task_type = responses[0]['metadata']['task_type']
+                # Normalize known aliases from upstream collectors
+                _aliases = {"secure_mcq": "secure"}
+                if judge_task_type in _aliases:
+                    judge_task_type = _aliases[judge_task_type]
                 print(f"Task type from metadata: {judge_task_type}")
             else:
                 # Fallback to hard-coded mapping for backward compatibility
@@ -1261,12 +1382,21 @@ def main():
                 judge_task_type = judge_task_type_map.get(task_lower, task_lower)
                 print(f"Task type from fallback mapping: {judge_task_type}")
             
-            # Convert to dataset-like format
+            # Convert to dataset-like format. Strip metadata to only the
+            # downstream-consumed `choices` field — sevenllm and other free-form
+            # tasks have heterogeneous nested metadata that pyarrow can't reconcile.
+            def _slim_meta(m):
+                meta = m if isinstance(m, dict) else {}
+                slim = {}
+                if "choices" in meta:
+                    slim["choices"] = meta["choices"]
+                return slim
+
             dataset_dict = {
                 'Prompt': [r.get('prompt', r.get('question', '')) for r in responses],
                 'GT': [r['ground_truth'] for r in responses],
                 'model_response': [r['model_response'] for r in responses],
-                'metadata': [r.get('metadata', {}) for r in responses]
+                'metadata': [_slim_meta(r.get('metadata', {})) for r in responses]
             }
             dataset = HFDataset.from_dict(dataset_dict)
             

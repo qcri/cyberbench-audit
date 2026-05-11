@@ -88,3 +88,10 @@ model_comparison_table.csv
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Log files (run logs, SLURM stderr/stdout redirected to root)
+*.log
+
+# Analysis reports — generated output (figures, CSVs, JSONs); run analysis/*.py to reproduce
+analysis/reports/
+analysis/report.pdf
