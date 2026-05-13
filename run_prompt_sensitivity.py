@@ -137,7 +137,7 @@ TASK_SYSTEM_PROMPTS = {
 
 # Single general CoT system suffix — appended to the existing system prompt for cot mode.
 # Task-agnostic: invokes structured reasoning via <scratchpad> tags without prescribing domain content.
-# Applied identically across all 24 tasks.
+# Applied identically across all 23 tasks.
 COT_SYSTEM_SUFFIX = """
 
 You are an expert problem-solving assistant with strong analytical skills.
@@ -628,7 +628,9 @@ def load_secure_samples(tsv_url):
 
 def load_seceval_samples():
     url = "https://huggingface.co/datasets/XuanwuAI/SecEval/resolve/main/questions.json"
-    questions = requests.get(url, timeout=30).json()
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    questions = response.json()
     results = []
     for q in questions:
         if not q.get("question") or not q.get("choices"):
