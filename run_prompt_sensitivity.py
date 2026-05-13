@@ -137,7 +137,7 @@ TASK_SYSTEM_PROMPTS = {
 
 # Single general CoT system suffix — appended to the existing system prompt for cot mode.
 # Task-agnostic: invokes structured reasoning via <scratchpad> tags without prescribing domain content.
-# Applied identically across all 23 tasks.
+# Applied identically across all 24 tasks.
 COT_SYSTEM_SUFFIX = """
 
 You are an expert problem-solving assistant with strong analytical skills.
