@@ -1,0 +1,1612 @@
+ThreatActor,Alias
+ALLANITE,Palmetto Fusion
+ANTHROPOID SPIDER,CobaltGoblin
+ANTHROPOID SPIDER,Empire Monkey
+APT-C-12,Blue Mushroom
+APT-C-12,NuclearCrisis
+APT-C-12,Sapphire Mushroom
+APT-C-27,ATK80
+APT-C-27,GoldMouse
+APT-C-27,Golden RAT
+APT-C-34,Golden Falcon
+APT-C-36,Blind Eagle
+APT-C-60,APT-Q-12
+APT1,Brown Fox
+APT1,Byzantine Candor
+APT1,COMMENT PANDA
+APT1,Comment Crew
+APT1,Comment Group
+APT1,G0006
+APT1,GIF89a
+APT1,Group 3
+APT1,PLA Unit 61398
+APT1,ShadyRAT
+APT1,TG-8223
+APT10,ATK41
+APT10,BRONZE RIVERSIDE
+APT10,CVNX
+APT10,Cicada
+APT10,Cloud Hopper
+APT10,G0045
+APT10,Granite Taurus
+APT10,HOGFISH
+APT10,Menupass Team
+APT10,POTASSIUM
+APT10,Purple Typhoon
+APT10,Red Apollo
+APT10,STONE PANDA
+APT10,TA429
+APT10,happyyongzi
+APT12,BRONZE GLOBE
+APT12,BeeBus
+APT12,Calc Team
+APT12,Crimson Iron
+APT12,DNSCalc
+APT12,DynCalc
+APT12,Group 22
+APT12,Hexagon Typhoon
+APT12,IXESHE
+APT12,NUMBERED PANDA
+APT12,TG-2754
+APT14,ALUMINUM
+APT14,ANCHOR PANDA
+APT14,QAZTeam
+APT15,BRONZE DAVENPORT
+APT15,BRONZE IDLEWOOD
+APT15,BRONZE PALACE
+APT15,G0004
+APT15,Ke3Chang
+APT15,Lurid
+APT15,Metushy
+APT15,Mirage
+APT15,NICKEL
+APT15,Nylon Typhoon
+APT15,Playful Dragon
+APT15,Red Vulture
+APT15,Royal APT
+APT15,Social Network Team
+APT15,VIXEN PANDA
+APT16,G0023
+APT16,SVCMONDR
+APT17,AURORA PANDA
+APT17,Axiom
+APT17,BRONZE KEYSTONE
+APT17,Dogfish
+APT17,G0001
+APT17,G0025
+APT17,Group 72
+APT17,Group 8
+APT17,HELIUM
+APT17,Heart Typhoon
+APT17,Hidden Lynx
+APT17,Tailgater Team
+APT18,DYNAMITE PANDA
+APT18,G0026
+APT18,PLA Navy
+APT18,SCANDIUM
+APT18,Satin Typhoon
+APT18,TG-0416
+APT18,Wekby
+APT19,BRONZE FIRESTONE
+APT19,Black Vine
+APT19,Checkered Typhoon
+APT19,Codoso
+APT19,DEEP PANDA
+APT19,G0009
+APT19,G0073
+APT19,Group 13
+APT19,KungFu Kittens
+APT19,PinkPanther
+APT19,Pupa
+APT19,Shell Crew
+APT19,Sunshop Group
+APT19,TEMP.Avengers
+APT19,WebMasters
+APT2,4HCrew
+APT2,G0024
+APT2,MSUpdater
+APT2,PLA Unit 61486
+APT2,PUTTER PANDA
+APT2,SULPHUR
+APT2,SearchFire
+APT2,TG-6952
+APT20,Crawling Taurus
+APT20,TH3Bug
+APT20,VIOLIN PANDA
+APT21,HAMMER PANDA
+APT21,NetTraveler
+APT21,TEMP.Zhenbao
+APT22,BRONZE OLIVE
+APT22,G0039
+APT22,Group 46
+APT22,Suckfly
+APT23,BRONZE HOBART
+APT23,Earth Centaur
+APT23,G0081
+APT23,KeyBoy
+APT23,PIRATE PANDA
+APT23,Red Orthrus
+APT23,Tropic Trooper
+APT24,G0011
+APT24,PITTY PANDA
+APT24,Temp.Pittytiger
+APT26,BRONZE EXPRESS
+APT26,JerseyMikes
+APT26,TECHNETIUM
+APT26,TURBINE PANDA
+APT26,Taffeta Typhoon
+APT27,BRONZE UNION
+APT27,Budworm
+APT27,Circle Typhoon
+APT27,EMISSARY PANDA
+APT27,Earth Smilodon
+APT27,G0027
+APT27,GreedyTaotie
+APT27,Group 35
+APT27,Iron Taurus
+APT27,Iron Tiger
+APT27,Linen Typhoon
+APT27,Lucky Mouse
+APT27,Red Phoenix
+APT27,TEMP.Hippo
+APT27,TG-3390
+APT27,ZipToken
+APT28,APT-C-20
+APT28,ATK5
+APT28,Blue Athena
+APT28,BlueDelta
+APT28,FANCY BEAR
+APT28,FROZENLAKE
+APT28,Fancy Bear
+APT28,Fighting Ursa
+APT28,Forest Blizzard
+APT28,G0007
+APT28,Grizzly Steppe
+APT28,Group 74
+APT28,GruesomeLarch
+APT28,IRON TWILIGHT
+APT28,ITG05
+APT28,Pawn Storm
+APT28,SIG40
+APT28,SNAKEMACKEREL
+APT28,STRONTIUM
+APT28,Sednit
+APT28,Sofacy
+APT28,Swallowtail
+APT28,T-APT-12
+APT28,TA422
+APT28,TG-4127
+APT28,Tsar Team
+APT28,UAC-0028
+APT29,ATK7
+APT29,Blue Kitsune
+APT29,BlueBravo
+APT29,COZY BEAR
+APT29,Cloaked Ursa
+APT29,G0016
+APT29,Grizzly Steppe
+APT29,Group 100
+APT29,IRON HEMLOCK
+APT29,ITG11
+APT29,Minidionis
+APT29,Nobelium
+APT29,SeaDuke
+APT29,TA421
+APT29,The Dukes
+APT29,UAC-0029
+APT29,YTTRIUM
+APT3,BORON
+APT3,BRONZE MAYFAIR
+APT3,Boyusec
+APT3,Brocade Typhoon
+APT3,Buckeye
+APT3,GOTHIC PANDA
+APT3,Group 6
+APT3,Red Sylvan
+APT3,TG-0110
+APT3,UPS
+APT30,G0013
+APT31,BRONZE VINEWOOD
+APT31,JUDGMENT PANDA
+APT31,Red keres
+APT31,TA412
+APT31,Violet Typhoon
+APT31,ZIRCONIUM
+APT31,Zirconium
+APT32,APT 32
+APT32,APT-32
+APT32,APT-C-00
+APT32,ATK17
+APT32,BISMUTH
+APT32,Canvas Cyclone
+APT32,Cobalt Kitty
+APT32,G0050
+APT32,Ocean Buffalo
+APT32,Ocean Lotus
+APT32,OceanLotus
+APT32,OceanLotus Group
+APT32,POND LOACH
+APT32,Sea Lotus
+APT32,SeaLotus
+APT32,TIN WOODLAWN
+APT33,APT 33
+APT33,ATK35
+APT33,COBALT TRINITY
+APT33,Elfin
+APT33,G0064
+APT33,HOLMIUM
+APT33,MAGNALLIUM
+APT33,Peach Sandstorm
+APT33,Refined Kitten
+APT33,TA451
+APT35,Agent Serpens
+APT35,COBALT MIRAGE
+APT35,G0059
+APT35,Magic Hound
+APT35,Mint Sandstorm
+APT35,Newscaster Team
+APT35,Phosphorus
+APT35,TunnelVision
+APT37,APT 37
+APT37,APT-C-28
+APT37,ATK4
+APT37,G0067
+APT37,Group 123
+APT37,Group123
+APT37,InkySquid
+APT37,Moldy Pisces
+APT37,Operation Daybreak
+APT37,Operation Erebus
+APT37,Reaper
+APT37,Reaper Group
+APT37,Red Eyes
+APT37,Ricochet Chollima
+APT37,ScarCruft
+APT37,Venus 121
+APT39,Burgundy Sandstorm
+APT39,COBALT HICKMAN
+APT39,Chafer
+APT39,G0087
+APT39,ITG07
+APT39,REMIX KITTEN
+APT39,Radio Serpens
+APT39,TA454
+APT4,BRONZE EDISON
+APT4,MAVERICK PANDA
+APT4,PLA Navy
+APT4,SODIUM
+APT4,Salmon Typhoon
+APT40,ATK29
+APT40,BRONZE MOHAWK
+APT40,G0065
+APT40,GADOLINIUM
+APT40,Gingham Typhoon
+APT40,ISLANDDREAMS
+APT40,ITG09
+APT40,KRYPTONITE PANDA
+APT40,Leviathan
+APT40,MUDCARP
+APT40,Red Ladon
+APT40,TA423
+APT40,TEMP.Jumper
+APT40,TEMP.Periscope
+APT41,Amoeba
+APT41,BARIUM
+APT41,BRONZE ATLAS
+APT41,BRONZE EXPORT
+APT41,Blackfly
+APT41,Brass Typhoon
+APT41,Double Dragon
+APT41,Earth Baku
+APT41,G0044
+APT41,G0096
+APT41,Grayfly
+APT41,HOODOO
+APT41,LEAD
+APT41,Leopard Typhoon
+APT41,Red Kelpie
+APT41,TA415
+APT41,TG-2633
+APT41,WICKED PANDA
+APT41,WICKED SPIDER
+APT41,Winnti
+APT42,CALANQUE
+APT42,UNC788
+APT5,BRONZE FLEETWOOD
+APT5,KEYHOLE PANDA
+APT5,MANGANESE
+APT5,Mulberry Typhoon
+APT5,Poisoned Flight
+APT5,TEMP.Bottle
+APT6,1.php Group
+APT73,Eraleig
+APT9,Group 27
+APT9,NIGHTSHADE PANDA
+APT9,Red Pegasus
+Aggressive Inventory Zombies,AIZ
+Alpha Spider,ALPHV Ransomware Group
+Angry Likho,Sticky Werewolf
+Anonymous64,Anonymous 64
+Aoqin Dragon,UNC94
+AridViper,APT-C-23
+AridViper,Arid Viper
+AridViper,Bearded Barbie
+AridViper,Desert Falcon
+AridViper,Two-tailed Scorpion
+Aslan Neferler Tim,Lion Soldiers Team
+Aslan Neferler Tim,Phantom Turk
+Asnarök,Personal Panda
+Awaken Likho,Core Werewolf
+Ayyıldız Tim,Crescent and Star
+BANISHED KITTEN,DUNE
+BANISHED KITTEN,Red Sandstorm
+BANISHED KITTEN,Storm-0842
+BOSS SPIDER,GOLD LOWELL
+BRONZE EDGEWOOD,Red Hariasa
+BRONZE HIGHLAND,Daggerfly
+BRONZE HIGHLAND,Evasive Panda
+BRONZE SPRING,UNC302
+BRONZE STARLIGHT,Cinnamon Tempest
+BRONZE STARLIGHT,DEV-0401
+BRONZE STARLIGHT,Emperor Dragonfly
+BRONZE STARLIGHT,SLIME34
+BackdoorDiplomacy,BackDip
+BackdoorDiplomacy,CloudComputating
+BackdoorDiplomacy,Quarian
+BazarCall,BazaCall
+BazarCall,BazzarCall
+Beijing Group,Elderwood
+Beijing Group,Elderwood Gang
+Beijing Group,G0066
+Beijing Group,SIG22
+Beijing Group,SNEAKY PANDA
+BelialDemon,Matanbuchus
+BlackOasis,G0063
+BlackTech,CIRCUIT PANDA
+BlackTech,Canary Typhoon
+BlackTech,Earth Hundun
+BlackTech,G0098
+BlackTech,HUAPI
+BlackTech,Manga Taurus
+BlackTech,Palmerworm
+BlackTech,Red Djinn
+BlackTech,T-APT-03
+BlackTech,Temp.Overboard
+Blackgear,Comnie
+Blackgear,Topgear
+Blackmeta,SN Blackmeta
+Blue Termite,Cloudy Omega
+Blue Termite,Emdivi
+Blue Tsunami,Black Cube
+BlueHornet,APT49
+BlueHornet,AgainstTheWest
+Bohrium,IMPERIAL KITTEN
+Bohrium,Smoke Sandstorm
+Budminer,Budminer cyberespionage group
+CHRYSENE,Greenbug
+CHRYSENE,OilRig
+CL-STA-0043,TGR-STA-0043
+COBALT JUNO,APT-C-38
+COBALT JUNO,SABER LION
+COBALT JUNO,TG-2884
+COBALT KATANA,Hive0081
+COBALT KATANA,Hunter Serpens
+COBALT KATANA,SectorD01
+COBALT KATANA,xHunt campaign
+Caliente Bandits,TA2721
+Callisto,Blue Callisto
+Callisto,BlueCharlie
+Callisto,COLDRIVER
+Callisto,GOSSAMER BEAR
+Callisto,IRON FRONTIER
+Callisto,SEABORGIUM
+Callisto,Star Blizzard
+Callisto,TA446
+Callisto,TAG-53
+Callisto,UNC4057
+Calypso,BRONZE MEDLEY
+Caracal Kitten,APT-Q-58
+Caramel Tsunami,Candiru
+Caramel Tsunami,SOURGUM
+Careto,Mask
+Careto,The Mask
+Careto,Ugly Face
+Carmine Tsunami,DEV-0196
+Carmine Tsunami,QuaDream
+Chamelgang,CamoFei
+Charming Kitten,CharmingCypress
+Charming Kitten,G0058
+Charming Kitten,Group 83
+Charming Kitten,Mint Sandstorm
+Charming Kitten,NewsBeef
+Charming Kitten,Newscaster
+Charming Kitten,Parastoo
+Charming Kitten,iKittens
+Cleaver,Alibaba
+Cleaver,Cobalt Gypsy
+Cleaver,G0003
+Cleaver,Op Cleaver
+Cleaver,Operation Cleaver
+Cleaver,TG-2889
+Cleaver,Tarh Andishan
+Clever Kitten,Group 41
+Cobalt,COBALT SPIDER
+Cobalt,Cobalt Gang
+Cobalt,Cobalt Group
+Cobalt,G0080
+Cobalt,GOLD KINGSWOOD
+Cobalt,Mule Libra
+Cold River,Nahr Elbard
+Cold River,Nahr el bared
+Common Raven,DESKTOP-GROUP
+Common Raven,NXSMS
+Common Raven,OPERA1ER
+CopyKittens,G0052
+CopyKittens,Slayer Kitten
+Corsair Jackal,TunisianCyberArmy
+Cotton Sandstorm,Emennet Pasargad
+Cotton Sandstorm,HAYWIRE KITTEN
+Cotton Sandstorm,Holy Souls
+Cotton Sandstorm,MARNANBRIDGE
+Cotton Sandstorm,NEPTUNIUM
+Cuboid Sandstorm,DEV-0228
+Curious Gorge,UNC3742
+Cutting Kitten,ITsecTeam
+Cyber Caliphate Army,CCA
+Cyber Caliphate Army,CyberCaliphate
+Cyber Caliphate Army,Islamic State Hacking Division
+Cyber Caliphate Army,UUC
+Cyber Caliphate Army,United Cyber Caliphate
+Cyber fighters of Izz Ad-Din Al Qassam,Fraternal Jackal
+Cyber.Anarchy.Squad,Cyber Anarchy Squad
+DAGGER PANDA,IceFog
+DAGGER PANDA,PLA Unit 69010
+DAGGER PANDA,Red Wendigo
+DAGGER PANDA,RedFoxtrot
+DAGGER PANDA,Trident
+DEV-0270,Nemesis Kitten
+DEV-0270,Storm-0270
+DEV-0569,Storm-0569
+DEV-0586,Cadet Blizzard
+DEV-0586,Ruinous Ursa
+DEV-0950,Lace Tempest
+DIZZY PANDA,LadyBoyle
+DNSpionage,COBALT EDGEWATER
+DOPPEL SPIDER,GOLD HERON
+Dark Caracal,G0070
+DarkHotel,APT-C-06
+DarkHotel,ATK52
+DarkHotel,DUBNIUM
+DarkHotel,Fallout Team
+DarkHotel,G0012
+DarkHotel,Karba
+DarkHotel,Luder
+DarkHotel,Nemim
+DarkHotel,Nemin
+DarkHotel,Pioneer
+DarkHotel,SIG25
+DarkHotel,Shadow Crane
+DarkHotel,T-APT-02
+DarkHotel,TUNGSTEN BRIDGE
+DarkHotel,Tapaoux
+DarkHotel,Zigzag Hail
+DarkHydrus,G0079
+DarkHydrus,LazyMeerkat
+DarkHydrus,Obscure Serpens
+Deadeye Jackal,SEA
+Deadeye Jackal,SyrianElectronicArmy
+DefrayX,Hive0091
+Denim Tsunami,DSIRF
+Denim Tsunami,KNOTWEED
+DieNet,Shiite_Harvest
+Domestic Kitten,APT-C-50
+Domestic Kitten,Bouncing Golf
+DragonOK,BRONZE OVERBROOK
+DragonOK,G0002
+DragonOK,G0017
+DragonOK,Moafee
+DragonOK,Shallow Taurus
+Dragonbridge,Spamouflage Dragon
+Dust Storm,G0031
+DustSquad,Nomadic Octopus
+ENERGETIC BEAR,ALLANITE
+ENERGETIC BEAR,ATK6
+ENERGETIC BEAR,BERSERK BEAR
+ENERGETIC BEAR,BROMINE
+ENERGETIC BEAR,Blue Kraken
+ENERGETIC BEAR,CASTLE
+ENERGETIC BEAR,Crouching Yeti
+ENERGETIC BEAR,DYMALLOY
+ENERGETIC BEAR,Dragonfly
+ENERGETIC BEAR,G0035
+ENERGETIC BEAR,Ghost Blizzard
+ENERGETIC BEAR,Group 24
+ENERGETIC BEAR,Havex
+ENERGETIC BEAR,IRON LIBERTY
+ENERGETIC BEAR,ITG15
+ENERGETIC BEAR,Koala Team
+ENERGETIC BEAR,TG-4192
+EXOTIC LILY,DEV-0413
+Earth Berberoka,GamblingPuppet
+Earth Kapre,Red Wolf
+Earth Kapre,RedCurl
+Earth Longzhi,SnakeCharmer
+Earth Lusca,AQUATIC PANDA
+Earth Lusca,BRONZE UNIVERSITY
+Earth Lusca,BountyGlad
+Earth Lusca,CHROMIUM
+Earth Lusca,Charcoal Typhoon
+Earth Lusca,ControlX
+Earth Lusca,FISHMONGER
+Earth Lusca,Red Dev 10
+Earth Lusca,Red Scylla
+Earth Lusca,RedHotel
+Earth Lusca,TAG-22
+Earth Yako,Enelink
+Earth Yako,Operation RestyLink
+El Machete,APT-C-43
+El Machete,G0095
+El Machete,Machete
+El Machete,machete-apt
+Equation Group,EQGRP
+Equation Group,G0020
+Equation Group,Tilded Team
+Evasive Panda,BRONZE HIGHLAND
+Evil Corp,GOLD DRAKE
+EvilTraffic,Operation EvilTraffic
+Evilnum,DeathStalker
+Evilnum,Jointworm
+Evilnum,KNOCKOUT SPIDER
+Evilnum,TA4563
+FIN10,G0051
+FIN11,TEMP.Warlock
+FIN11,UNC902
+FIN13,Elephant Beetle
+FIN13,TG2003
+FIN5,G0053
+FIN6,ATK88
+FIN6,Camouflage Tempest
+FIN6,G0037
+FIN6,GOLD FRANKLIN
+FIN6,ITG08
+FIN6,MageCart Group 6
+FIN6,SKELETON SPIDER
+FIN6,Storm-0538
+FIN6,TA4557
+FIN6,White Giant
+FIN7,ATK32
+FIN7,CARBON SPIDER
+FIN7,Calcium
+FIN7,Carbanak
+FIN7,Carbon Spider
+FIN7,Coreid
+FIN7,ELBRUS
+FIN7,G0008
+FIN7,G0046
+FIN7,GOLD NIAGARA
+FIN7,JokerStash
+FIN7,Sangria Tempest
+FIN7, GrayAlpha
+FIN8,ATK113
+FIN8,G0061
+Fail0verflow,Team Twiizer
+Fishing Elephant,Outrider Tiger
+Flax Typhoon,Ethereal Panda
+Flax Typhoon,Storm-0919
+Flying Kitten,Ajax Security Team
+Flying Kitten,AjaxSecurityTeam
+Flying Kitten,Group 26
+Flying Kitten,Saffron Rose
+Flying Kitten,SaffronRose
+Flying Kitten,Sayad
+FlyingYeti,Flying Yeti
+FlyingYeti,Storm-1837
+Fox Kitten,Lemon Sandstorm
+Fox Kitten,PARISITE
+Fox Kitten,PIONEER KITTEN
+Fox Kitten,RUBIDIUM
+Fox Kitten,UNC757
+GALLIUM,Alloy Taurus
+GALLIUM,Granite Typhoon
+GALLIUM,PHANTOM PANDA
+GALLIUM,Red Dev 4
+GC01,Golden Chickens
+GC01,Golden Chickens 01
+GC01,Golden Chickens01
+GC02,Golden Chickens
+GC02,Golden Chickens 02
+GC02,Golden Chickens02
+GCMAN,G0036
+GOBLIN PANDA,Conimes
+GOBLIN PANDA,Cycldek
+GOLD BURLAP,CYBORG SPIDER
+GOLD CABIN,ATK236
+GOLD CABIN,G0127
+GOLD CABIN,Monster Libra
+GOLD CABIN,Shakthak
+GOLD CABIN,TA551
+GOLD DUPONT,SPRITE SPIDER
+GOLD PRELUDE,TA569
+GOLD PRELUDE,UNC1543
+GOLD REBELLION,Dark Scorpius
+GOLD REBELLION,WANDERING SPIDER
+GOLD REBELLION,White Dev 115
+GRIM SPIDER,GOLD ULRICK
+Gamaredon Group,ACTINIUM
+Gamaredon Group,Actinium
+Gamaredon Group,Aqua Blizzard
+Gamaredon Group,Blue Otso
+Gamaredon Group,BlueAlpha
+Gamaredon Group,DEV-0157
+Gamaredon Group,G0047
+Gamaredon Group,IRON TILDEN
+Gamaredon Group,PRIMITIVE BEAR
+Gamaredon Group,Shuckworm
+Gamaredon Group,Trident Ursa
+Gamaredon Group,UAC-0010
+Gamaredon Group,Winterflounder
+Gelsemium,狼毒草
+GhostEmperor,FamousSparrow
+GhostEmperor,OPERATOR PANDA
+GhostEmperor,RedMike
+GhostEmperor,Salt Typhoon
+GhostEmperor,UNC2286
+GhostNet,Snooping Dragon
+GhostSec,Ghost Security
+Ghostwriter,DEV-0257
+Ghostwriter,PUSHCHA
+Ghostwriter,Storm-0257
+Ghostwriter,TA445
+Ghostwriter,UAC-0057
+Ghostwriter,UNC1151
+Gray Sandstorm,DEV-0343
+GreenSpot,APT-Q-20
+GreenSpot,PoisonVine
+Group5,G0043
+HAFNIUM,ATK233
+HAFNIUM,G0125
+HAFNIUM,MURKY PANDA
+HAFNIUM,Operation Exchange Marauder
+HAFNIUM,Red Dev 13
+HAFNIUM,Silk Typhoon
+HAZY TIGER,APT-C-08
+HAZY TIGER,Bitter
+HAZY TIGER,Orange Yali
+HAZY TIGER,T-APT-17
+HAZY TIGER,TA397
+HIVE-0145,Hive0145
+Hagga,Aggah
+Hagga,TH-157
+Hezb,Mimo
+Honeybee,G0072
+INDRIK SPIDER,Manatee Tempest
+Inception Framework,ATK116
+Inception Framework,Blue Odin
+Inception Framework,Clean Ursa
+Inception Framework,Cloud Atlas
+Inception Framework,G0100
+Inception Framework,OXYGEN
+Infy,Foudre
+Infy,Operation Mermaid
+Infy,Prince of Persia
+Iron Group,Iron Cyber Group
+ItaDuke,DarkUniverse
+ItaDuke,SIG27
+Jabaroot,Jabaroot DZ
+Karakurt,Karakurt Lair
+Karkadann,Piwiks
+Kimsuky,APT43
+Kimsuky,Black Banshee
+Kimsuky,Emerald Sleet
+Kimsuky,G0086
+Kimsuky,Operation Stolen Pencil
+Kimsuky,Sparkling Pisces
+Kimsuky,Springtail
+Kimsuky,THALLIUM
+Kimsuky,Thallium
+Kimsuky,Velvet Chollima
+Kinsing,Money Libra
+LAPSUS,DEV-0537
+LAPSUS,LAPSUS$
+LAPSUS,SLIPPY SPIDER
+LAPSUS,Strawberry Tempest
+LOTUS PANDA,ATK1
+LOTUS PANDA,BRONZE ELGIN
+LOTUS PANDA,Billbug
+LOTUS PANDA,DRAGONFISH
+LOTUS PANDA,G0030
+LOTUS PANDA,Lotus BLossom
+LOTUS PANDA,Lotus Blossom
+LOTUS PANDA,Red Salamander
+LOTUS PANDA,ST Group
+LOTUS PANDA,Spring Dragon
+LUNAR SPIDER,GOLD SWATHMORE
+LYCEUM,COBALT LYCEUM
+LYCEUM,Chrono Kitten
+LYCEUM,HEXANE
+LYCEUM,MYSTICDOME
+LYCEUM,Spirlin
+LYCEUM,Storm-0133
+LYCEUM,UNC1530
+LYCEUM,siamesekitten
+Larva-208,EncryptHub
+Lazarus Group,APT 38
+Lazarus Group,APT-C-26
+Lazarus Group,APT38
+Lazarus Group,ATK117
+Lazarus Group,ATK3
+Lazarus Group,Andariel
+Lazarus Group,Appleworm
+Lazarus Group,BeagleBoyz
+Lazarus Group,Bluenoroff
+Lazarus Group,Bureau 121
+Lazarus Group,COPERNICIUM
+Lazarus Group,COVELLITE
+Lazarus Group,Citrine Sleet
+Lazarus Group,DEV-0139
+Lazarus Group,DEV-1222
+Lazarus Group,Dark Seoul
+Lazarus Group,Diamond Sleet
+Lazarus Group,G0032
+Lazarus Group,G0082
+Lazarus Group,Group 77
+Lazarus Group,Hastati Group
+Lazarus Group,Hidden Cobra
+Lazarus Group,Labyrinth Chollima
+Lazarus Group,Moonstone Sleet
+Lazarus Group,NICKEL GLADSTONE
+Lazarus Group,NewRomanic Cyber Army Team
+Lazarus Group,Nickel Academy
+Lazarus Group,Operation AppleJeus
+Lazarus Group,Operation DarkSeoul
+Lazarus Group,Operation GhostSecret
+Lazarus Group,Operation Troy
+Lazarus Group,Sapphire Sleet
+Lazarus Group,Stardust Chollima
+Lazarus Group,Subgroup: Bluenoroff
+Lazarus Group,TA404
+Lazarus Group,Unit 121
+Lazarus Group,Whois Hacking Team
+Lazarus Group,ZINC
+Lazarus Group,Zinc
+LightBasin,CL-CRI-0025
+LightBasin,UNC1945
+Lilac Typhoon,DEV-0234
+LinkC Pub,LinkC
+Longhorn,APT-C-39
+Longhorn,Lamberts
+Longhorn,PLATINUM TERMINAL
+Longhorn,the Lamberts
+Lucky Cat,TA413
+Lucky Cat,White Dev 9
+Luna Moth,Silent Ransom
+Luna Moth,TG2729
+MALLARD SPIDER,GOLD LAGOON
+MONTY SPIDER,Spandex Tempest
+MUMMY SPIDER,GOLD CRESTWOOD
+MUMMY SPIDER,TA542
+MUSTANG PANDA,BASIN
+MUSTANG PANDA,BRONZE PRESIDENT
+MUSTANG PANDA,Earth Preta
+MUSTANG PANDA,HoneyMyte
+MUSTANG PANDA,LuminousMoth
+MUSTANG PANDA,Polaris
+MUSTANG PANDA,Red Lich
+MUSTANG PANDA,Stately Taurus
+MUSTANG PANDA,TA416
+MUSTANG PANDA,TANTALUM
+MUSTANG PANDA,TEMP.HEX
+MUSTANG PANDA,Twill Typhoon
+Magic Kitten,Group 42
+Magic Kitten,VOYEUR
+MirrorFace,Earth Kasha
+Mofang,BRONZE WALKER
+Mofang,Superman
+Molerats,ALUMINUM SARATOGA
+Molerats,BLACKSTEM
+Molerats,Extreme Jackal
+Molerats,G0021
+Molerats,Gaza Cybergang
+Molerats,Gaza Hackers Team
+Molerats,Gaza cybergang
+Molerats,Moonlight
+Molerats,Operation Molerats
+MosesStaff,DEV-0500
+MosesStaff,Marigold Sandstorm
+MosesStaff,Moses Staff
+MosesStaff,VENGEFUL KITTEN
+Moskalvzapoe,MAN1
+Moskalvzapoe,TA511
+MuddyWater,ATK51
+MuddyWater,Boggy Serpens
+MuddyWater,COBALT ULSTER
+MuddyWater,Earth Vetala
+MuddyWater,G0069
+MuddyWater,MERCURY
+MuddyWater,Mango Sandstorm
+MuddyWater,Seedworm
+MuddyWater,Static Kitten
+MuddyWater,TA450
+MuddyWater,TEMP.Zagros
+MurenShark,Actor210426
+Mustard Tempest,DEV-0206
+Mustard Tempest,Purple Vallhund
+NARWHAL SPIDER,GOLD ESSEX
+NARWHAL SPIDER,Storm-0302
+NARWHAL SPIDER,TA544
+NB65,Network Battalion 65
+NEODYMIUM,G0055
+Naikon,BRONZE GENEVA
+Naikon,BRONZE STERLING
+Naikon,Camerashy
+Naikon,G0013
+Naikon,G0019
+Naikon,OVERRIDE PANDA
+Naikon,PLA Unit 78020
+Nazar,SIG37
+Night Dragon,G0014
+Nitro,Covert Grove
+NoName057(16),05716nnm
+NoName057(16),Nnm05716
+NoName057(16),NoName057
+NoName057(16),NoName05716
+OilRig,APT 34
+OilRig,APT34
+OilRig,ATK40
+OilRig,Cobalt Gypsy
+OilRig,Crambus
+OilRig,EUROPIUM
+OilRig,Earth Simnavaz
+OilRig,Evasive Serpens
+OilRig,G0049
+OilRig,Hazel Sandstorm
+OilRig,Helix Kitten
+OilRig,IRN2
+OilRig,TA452
+OilRig,Twisted Kitten
+Opal Sleet,Konni
+Opal Sleet,OSMIUM
+Opal Sleet,Vedalia
+Operation C-Major,APT 36
+Operation C-Major,APT36
+Operation C-Major,C-Major
+Operation C-Major,COPPER FIELDSTONE
+Operation C-Major,Earth Karkaddan
+Operation C-Major,Green Havildar
+Operation C-Major,Mythic Leopard
+Operation C-Major,ProjectM
+Operation C-Major,Storm-0156
+Operation C-Major,TMP.Lapis
+Operation C-Major,Transparent Tribe
+Operation Emmental,Retefe Gang
+Operation Emmental,Retefe Group
+PARINACOTA,Wine Tempest
+PIZZO SPIDER,Ambiorx
+PIZZO SPIDER,DD4BC
+PLATINUM,ATK33
+PLATINUM,G0068
+PLATINUM,TwoForOne
+POISON CARP,Earth Empusa
+POISON CARP,Evil Eye
+POISON CARP,Red Dev 16
+POLONIUM,GREATRIFT
+POLONIUM,INCENDIARY JACKAL
+POLONIUM,Plaid Rain
+POLONIUM,UNC4453
+PROMETHIUM,G0056
+PROMETHIUM,StrongPity
+Patched Lightning,Storm-0113
+Pearl Sleet,DEV-0215
+Pearl Sleet,LAWRENCIUM
+Phlox Tempest,DEV-0796
+Pickaxe,Prying Libra
+Pink Sandstorm,AMERICIUM
+Pink Sandstorm,Agonizing Serpens
+Pink Sandstorm,Agrius
+Pink Sandstorm,Black Shadow
+Pink Sandstorm,BlackShadow
+Pink Sandstorm,DEV-0022
+Pink Sandstorm,SPECTRAL KITTEN
+Pink Sandstorm,UNC2428
+Poseidon Group,G0033
+PowerPool,IAmTheKing
+Predatory Sparrow,Gonjeshke Darande
+Predatory Sparrow,Indra
+ProjectSauron,G0041
+ProjectSauron,Project Sauron
+ProjectSauron,Sauron
+ProjectSauron,Strider
+Prophet Spider,GOLD MELODY
+Prophet Spider,UNC961
+QUILTED TIGER,APT-C-09
+QUILTED TIGER,ATK11
+QUILTED TIGER,Chinastrats
+QUILTED TIGER,Dropping Elephant
+QUILTED TIGER,G0040
+QUILTED TIGER,Monsoon
+QUILTED TIGER,Orange Athos
+QUILTED TIGER,Patchwork
+QUILTED TIGER,Sarit
+QUILTED TIGER,Thirsty Gemini
+QUILTED TIGER,ZINC EMERSON
+RADIO PANDA,Shrouded Crossbow
+RANCOR,G0075
+RANCOR,Rancor Group
+RANCOR,Rancor Taurus
+RANCOR,Rancor group
+RASPITE,LeafMiner
+RAZOR TIGER,APT-C-17
+RAZOR TIGER,Rattlesnake
+RAZOR TIGER,SideWinder
+RAZOR TIGER,T-APT-04
+REF7707,CL-STA-0049
+RTM,G0048
+RaHDit,Russian Angry Hackers Did It
+RansomVC,Ransomed.vc
+Raspberry Typhoon,RADIUM
+Rebel Jackal,FallagaTeam
+Red Menshen,Earth Bluecrow
+Red Menshen,Red Dev 18
+Red Nue,LuoYu
+RedAlpha,DeepCliff
+RedAlpha,Red Dev 3
+RedStinger,Bad Magic
+Returned Libra,8220 Mining Group
+Roaming Mantis,Roaming Mantis Group
+Roaming Tiger,BRONZE WOODLAND
+Roaming Tiger,Rotten Tomato
+Rocke,Aged Libra
+Rocket Kitten,Operation Woolen Goldfish
+Rocket Kitten,Operation Woolen-Goldfish
+Rocket Kitten,TEMP.Beanie
+Rocket Kitten,Thamar Reservoir
+Rocket Kitten,Timberworm
+RomCom,Storm-0978
+RomCom,UAT-5647
+Ruby Sleet,CERIUM
+SAMURAI PANDA,PLA Navy
+SAMURAI PANDA,Wisp Team
+SNOWGLOBE,ATK8
+SNOWGLOBE,Animal Farm
+STARDUST CHOLLIMA,Sapphire Sleet
+SaintBear,Bleeding Bear
+SaintBear,Cadet Blizzard
+SaintBear,DEV-0587
+SaintBear,EMBER BEAR
+SaintBear,FROZENVISTA
+SaintBear,Lorec Bear
+SaintBear,Lorec53
+SaintBear,Nascent Ursa
+SaintBear,Nodaria
+SaintBear,Saint Bear
+SaintBear,Storm-0587
+SaintBear,TA471
+SaintBear,UAC-0056
+SaintBear,UNC2589
+Sandworm,APT44
+Sandworm,Blue Echidna
+Sandworm,ELECTRUM
+Sandworm,FROZENBARENTS
+Sandworm,G0034
+Sandworm,IRIDIUM
+Sandworm,IRON VIKING
+Sandworm,Quedagh
+Sandworm,Seashell Blizzard
+Sandworm,TEMP.Noble
+Sandworm,TeleBots
+Sandworm,UAC-0082
+Sandworm,UAC-0113
+Sandworm,VOODOO BEAR
+Scarlet Mimic,G0029
+Scarlet Mimic,Golfing Taurus
+Scattered Spider,0ktapus
+Scattered Spider,DEV-0971
+Scattered Spider,Muddled Libra
+Scattered Spider,Octo Tempest
+Scattered Spider,Oktapus
+Scattered Spider,Scatter Swine
+Scattered Spider,Scattered Swine
+Scattered Spider,Starfraud
+Scattered Spider,Storm-08751
+Scattered Spider,Storm-0971
+Scattered Spider,UNC3944
+Sea Turtle,COSMIC WOLF
+Sea Turtle,Marbled Dust
+Sea Turtle,SILICON
+Sea Turtle,Teal Kurma
+Sea Turtle,UNC1326
+Silence group,Silence
+Silence group,WHISPER SPIDER
+Silent Chollima,Andariel
+Silent Chollima,GOP
+Silent Chollima,Guardian of Peace
+Silent Chollima,Onyx Sleet
+Silent Chollima,OperationTroy
+Silent Chollima,PLUTONIUM
+Silent Chollima,Subgroup: Andariel
+Silent Chollima,WHOis Team
+Silent Librarian,COBALT DICKENS
+Silent Librarian,Mabna Institute
+Silent Librarian,TA407
+Silent Librarian,TA4900
+Silent Librarian,Yellow Nabu
+SkidSec,SkidSec Leaks
+Sowbug,G0054
+Stealth Falcon,FruityArmor
+Stealth Falcon,G0038
+Storm-0062,DarkShadow
+Storm-0062,Oro0lxy
+Storm-0249,DEV-0249
+Storm-0324,DEV-0324
+Storm-0324,Sagrid
+Storm-0324,TA543
+Storm-0381,DEV-0381
+Storm-0473,UNC2849
+Storm-0530,DEV-0530
+Storm-0530,H0lyGh0st
+Storm-0829,DEV-0829
+Storm-0829,Nwgen Team
+Storm-0867,DEV-0867
+Storm-0940,CovertNetwork-1658
+Storm-0940,ORB07
+Storm-1044,DEV-1044
+Storm-1084,DEV-1084
+Storm-1101,DEV-1101
+Storm-1113,APOTHECARY SPIDER
+Storm-1167,DEV-1167
+Storm-1295,DEV-1295
+Storm-1567,Akira
+Storm-1567,GOLD SAHARA
+Storm-1567,PUNK SPIDER
+Storm-1849,UAT4356
+Storm-2077,TAG-100
+Sunglow Blizzard,DEV-0665
+TA2101,DEV-0216
+TA2101,GOLD VILLAGE
+TA2101,Maze Team
+TA2101,Storm-0216
+TA2101,TUNNEL SPIDER
+TA2101,TWISTED SPIDER
+TA2101,UNC2198
+TA2722,Balikbayan Foxes
+TA428,BRONZE DUDLEY
+TA428,Colourful Panda
+TA459,G0062
+TA499,Lexus
+TA499,Vovan
+TA505,ATK103
+TA505,CHIMBORAZO
+TA505,Dudear
+TA505,G0092
+TA505,GOLD TAHOE
+TA505,GRACEFUL SPIDER
+TA505,Hive0065
+TA505,SectorJ04
+TA505,SectorJ04 Group
+TA505,Spandex Tempest
+TA505, FIN11 
+TA554,TH-163
+TA570,DEV-0450
+TA577,Hive0118
+TAG-124,LandUpdate808
+TEMP.Veles,ATK91
+TEMP.Veles,G0088
+TEMP.Veles,Xenotime
+TEMPER PANDA,Admin338
+TEMPER PANDA,G0018
+TEMPER PANDA,MAGNESIUM
+TEMPER PANDA,Team338
+TEMPER PANDA,admin@338
+Taidoor,Earth Aughisky
+Taidoor,G0015
+TaskMasters,BlueTraveller
+TeamSpy Crew,Anger Bear
+TeamSpy Crew,IRON LYRIC
+TeamSpy Crew,Team Bear
+TeamSpy Crew,TeamSpy
+TeamTNT,Adept Libra
+TeamXRat,CorporacaoXRat
+TeamXRat,CorporationXRat
+The Gorgon Group,ATK92
+The Gorgon Group,G0078
+The Gorgon Group,Gorgon Group
+The Gorgon Group,Pasty Gemini
+The Gorgon Group,Subaat
+The Shadow Brokers,Shadow Brokers
+The Shadow Brokers,ShadowBrokers
+The Shadow Brokers,TSB
+The Shadow Brokers,The ShadowBrokers
+Thrip,ATK78
+Thrip,G0076
+Tick,BRONZE BUTLER
+Tick,G0060
+Tick,Nian
+Tick,PLA Unit 61419
+Tick,REDBALDKNIGHT
+Tick,STALKER PANDA
+Tick,Stalker Taurus
+Tick,Swirl Typhoon
+TiltedTemple,Circle Typhoon
+TiltedTemple,DEV-0322
+ToddyCat,Websiic
+Tonto Team,BRONZE HUNTLEY
+Tonto Team,COPPER
+Tonto Team,CactusPete
+Tonto Team,Earth Akhlut
+Tonto Team,G0131
+Tonto Team,KARMA PANDA
+Tonto Team,PLA Unit 65017
+Tonto Team,Red Beifang
+Tonto Team,TAG-74
+Tortoiseshell,Crimson Sandstorm
+Tortoiseshell,Cuboid Sandstorm
+Tortoiseshell,DUSTYCAVE
+Tortoiseshell,IMPERIAL KITTEN
+Tortoiseshell,Imperial Kitten
+Tortoiseshell,Smoke Sandstorm
+Tortoiseshell,TA456
+Tortoiseshell,Yellow Liderc
+TraderTraitor,Jade Sleet
+TraderTraitor,Pukchong
+TraderTraitor,UNC4899
+TurkHackTeam,Turk Hack Team
+Turla,ATK13
+Turla,Blue Python
+Turla,G0010
+Turla,Group 88
+Turla,Hippo Team
+Turla,IRON HUNTER
+Turla,ITG12
+Turla,KRYPTON
+Turla,MAKERSMARK
+Turla,Pacifier APT
+Turla,Pfinet
+Turla,Popeye
+Turla,SIG23
+Turla,SUMMIT
+Turla,Secret Blizzard
+Turla,Snake
+Turla,TAG_0530
+Turla,UAC-0003
+Turla,UAC-0024
+Turla,UAC-0144
+Turla,UNC4210
+Turla,Uroburos
+Turla,VENOMOUS Bear
+Turla,WRAITH
+Turla,Waterbug
+TwoSail Junk,Operation Poisoned News
+UAC-0020,SickSync
+UAC-0020,Vermin
+UAC-0118,FRwL
+UAC-0118,FromRussiaWithLove
+UAC-0185,UNC4221
+UNC2452,DarkHalo
+UNC2452,Midnight Blizzard
+UNC2452,NOBELIUM
+UNC2452,Solar Phoenix
+UNC2452,StellarParticle
+UNC2565,Hive0127
+UNC4393,CURLY SPIDER
+UNC4393,Cardinal
+UNC4393,STAC5777
+UNC4393,Storm-1811
+UNC4841,SLIME57
+UNC5174,Uteus
+UTA0178,Red Dev 61
+UTA0178,UNC5221
+Ukrainian Cyber Alliance,UCA
+Unit 8200,Duqu Group
+VENOM SPIDER,badbullz
+VENOM SPIDER,badbullzvenom
+VICEROY TIGER,APT-C-35
+VICEROY TIGER,Donot Team
+VICEROY TIGER,OPERATION HANGOVER
+VICEROY TIGER,Orange Kala
+VICEROY TIGER,SectorE02
+Vanilla Tempest,DEV-0832
+Vanilla Tempest,Vice Society
+Velvet Tempest,DEV-0504
+Vicious Panda,SixLittleMonkeys
+Viking Jackal,Vikingdom
+Void Arachne,Silver Fox
+Void Blizzard,LAUNDRY BEAR
+Void Rabisu,Tropical Scorpius
+Volatile Cedar,DeftTorero
+Volatile Cedar,Lebanese Cedar
+Volt Typhoon,BRONZE SILHOUETTE
+Volt Typhoon,Dev-0391
+Volt Typhoon,Insidious Taurus
+Volt Typhoon,Storm-0391
+Volt Typhoon,UNC3236
+Volt Typhoon,VANGUARD PANDA
+Volt Typhoon,VOLTZITE
+VulzSecTeam,VulzSec
+WET PANDA,Red Chimera
+WIZARD SPIDER,DEV-0193
+WIZARD SPIDER,DEV-0237
+WIZARD SPIDER,FIN12
+WIZARD SPIDER,GOLD BLACKBURN
+WIZARD SPIDER,Periwinkle Tempest
+WIZARD SPIDER,Pistachio Tempest
+WIZARD SPIDER,Storm-0193
+WIZARD SPIDER,Storm-0230
+WIZARD SPIDER,TEMP.MixMaster
+WIZARD SPIDER,Trickbot LLC
+WIZARD SPIDER,UNC2053
+WOLF SPIDER,FIN4
+WOLF SPIDER,G0085
+WageMole,Famous Chollima
+WageMole,Nickel Tapestry
+WageMole,Storm-1877
+WageMole,UNC5267
+WageMole,Void Dokkaebi
+Watchdog,Thief Libra
+Water Sigbin,8220 Gang
+Webworm,Space Pirates
+White Bear,Skipper Turla
+WildNeutron,Butterfly
+WildNeutron,Morpho
+WildNeutron,Sphinx Moth
+WindShift,Windy Phoenix
+Winter Vivern,TA-473
+Winter Vivern,TA473
+Winter Vivern,TAG-70
+Winter Vivern,UAC-0114
+Witchetty,LookingFrog
+XakNet,UAC-0100
+XakNet,UAC-0106
+Xiaoqiying,Genesis Day
+Xiaoqiying,Teng Snake
+YoroTrooper,Salted Earth
+YoroTrooper,Sturgeon Fisher
+Zarya,UAC-0109
+andariel,gop
+andariel,guardian of peace
+andariel,onyx sleet
+andariel,operationtroy
+andariel,plutonium
+andariel,silent chollima
+apt-c-36,blind eagle
+apt19,black vine
+apt19,bronze firestone
+apt19,codoso
+apt19,deep panda
+apt19,g0009
+apt19,g0073
+apt19,group 13
+apt19,kungfu kittens
+apt19,pinkpanther
+apt19,pupa
+apt19,shell crew
+apt19,sunshop group
+apt19,temp avengers
+apt19,webmasters
+apt28,apt c 20
+apt28,atk5
+apt28,blue athena
+apt28,fancy bear
+apt28,fighting ursa
+apt28,forest blizzard
+apt28,frozenlake
+apt28,g0007
+apt28,grey cloud
+apt28,grizzly steppe
+apt28,group 4127
+apt28,group 74
+apt28,iron twilight
+apt28,itg05
+apt28,pawn storm
+apt28,sednit
+apt28,sig40
+apt28,snakemackerel
+apt28,sofacy
+apt28,sofacy group
+apt28,strontium
+apt28,swallowtail
+apt28,t apt 12
+apt28,ta422
+apt28,tg 4127
+apt28,tsar team
+apt28,tsarteam
+apt28,uac 0028
+apt29,atk7
+apt29,blue kitsune
+apt29,bluebravo
+apt29,cloaked ursa
+apt29,cozy bear
+apt29,g0016
+apt29,grizzly steppe
+apt29,group 100
+apt29,iron hemlock
+apt29,itg11
+apt29,midnight blizzard
+apt29,minidionis
+apt29,nobelium
+apt29,seaduke
+apt29,ta421
+apt29,the dukes
+apt29,uac 0029
+apt29,yttrium
+apt31,bronze vinewood
+apt31,judgment panda
+apt31,red keres
+apt31,ta412
+apt31,violet typhoon
+apt31,zirconium
+apt33,apt 33
+apt33,atk35
+apt33,cobalt trinity
+apt33,elfin
+apt33,g0064
+apt33,holmium
+apt33,magnallium
+apt33,peach sandstorm
+apt33,refined kitten
+apt33,ta451
+apt35,charming kitten
+apt35,cobalt mirage
+apt35,g0059
+apt35,magic hound
+apt35,mint sandstorm
+apt35,newscaster team
+apt35,phosphorus
+apt35,tunnelvision
+apt36,apt 36
+apt36,apt36
+apt36,c major
+apt36,copper fieldstone
+apt36,earth karkaddan
+apt36,green havildar
+apt36,mythic leopard
+apt36,projectm
+apt36,tmp lapis
+apt36,transparent tribe
+apt37,apt 37
+apt37,atk4
+apt37,g0067
+apt37,group 123
+apt37,group123
+apt37,inkysquid
+apt37,moldy pisces
+apt37,operation daybreak
+apt37,operation erebus
+apt37,reaper
+apt37,reaper group
+apt37,red eyes
+apt37,ricochet chollima
+apt37,scarcruft
+apt37,venus 121
+apt41,amoeba
+apt41,barium
+apt41,blackfly
+apt41,brass typhoon
+apt41,bronze atlas
+apt41,bronze export
+apt41,earth baku
+apt41,g0044
+apt41,g0096
+apt41,grayfly
+apt41,hoodoo
+apt41,lead
+apt41,red kelpie
+apt41,ta415
+apt41,wicked panda
+apt41,wicked spider
+bahamut,dropping elephant
+bitter apt,
+charmingcypress,apt42
+charmingcypress,charming kitten
+charmingcypress,mint sandstorm
+charmingcypress,ta453
+chrysene,apt34
+chrysene,cobalt gypsy
+chrysene,europium
+chrysene,greenbug
+chrysene,hazel sandstorm
+chrysene,oilrig
+coldriver,bluecharlie
+coldriver,callisto
+coldriver,gossamer bear
+coldriver,reuse team
+coldriver,seaborgium
+coldriver,star blizzard
+coldriver,ta446
+confucius,confucius apt
+dark caracal,g0070
+diamond sleet,lazarus
+dragonfly,allanite
+dragonfly,atk6
+dragonfly,berserk bear
+dragonfly,blue kraken
+dragonfly,bromine
+dragonfly,castle
+dragonfly,crouching yeti
+dragonfly,dymalloy
+dragonfly,energetic bear
+dragonfly,g0035
+dragonfly,ghost blizzard
+dragonfly,group 24
+dragonfly,havex
+dragonfly,iron liberty
+dragonfly,itg15
+dragonfly,koala team
+dragonfly,tg 4192
+gamaredon,actinium
+gamaredon,aqua blizzard
+gamaredon,blue otso
+gamaredon,bluealpha
+gamaredon,dev 0157
+gamaredon,g0047
+gamaredon,gamaredon
+gamaredon,iron tilden
+gamaredon,primitive bear
+gamaredon,shuckworm
+gamaredon,trident ursa
+gamaredon,uac 0010
+gamaredon,unc530
+gamaredon,winterflounder
+kimsuky,apt43
+kimsuky,black banshee
+kimsuky,emerald sleet
+kimsuky,g0086
+kimsuky,operation stolen pencil
+kimsuky,thallium
+kimsuky,velvet chollima
+lazarus,andariel
+lazarus,appleworm
+lazarus,apt 38
+lazarus,apt c 26
+lazarus,apt38
+lazarus,atk117
+lazarus,atk3
+lazarus,beagleboyz
+lazarus,bluenoroff
+lazarus,bureau 121
+lazarus,citrine sleet
+lazarus,copernicium
+lazarus,covellite
+lazarus,dark seoul
+lazarus,dev 0139
+lazarus,dev 1222
+lazarus,diamond sleet
+lazarus,g0032
+lazarus,g0082
+lazarus,genie spider
+lazarus,group 77
+lazarus,hastati group
+lazarus,hidden cobra
+lazarus,labyrinth chollima
+lazarus,lazarus
+lazarus,lazarus group
+lazarus,newromanic cyber army team
+lazarus,nickel academy
+lazarus,nickel gladstone
+lazarus,operation applejeus
+lazarus,operation darkseoul
+lazarus,operation ghostsecret
+lazarus,operation troy
+lazarus,sapphire sleet
+lazarus,stardust chollima
+lazarus,subgroup  bluenoroff
+lazarus,ta404
+lazarus,unit 121
+lazarus,whois hacking team
+lazarus,zinc
+mint sandstorm,apt35
+mint sandstorm,charming kitten
+mint sandstorm,charmingcypress
+mint sandstorm,g0058
+mint sandstorm,group 83
+mint sandstorm,ikittens
+mint sandstorm,newsbeef
+mint sandstorm,newscaster
+mint sandstorm,parastoo
+mint sandstorm,phosphorus
+muddywater,atk51
+muddywater,boggy serpens
+muddywater,cobalt ulster
+muddywater,earth vetala
+muddywater,g0069
+muddywater,mango sandstorm
+muddywater,mercury
+muddywater,seedworm
+muddywater,static kitten
+muddywater,ta450
+muddywater,temp zagros
+mummy spider,emotet
+mummy spider,gold crestwood
+mummy spider,ta542
+mustang panda,basin
+mustang panda,bronze president
+mustang panda,earth preta
+mustang panda,honeymyte
+mustang panda,luminousmoth
+mustang panda,polaris
+mustang panda,red lich
+mustang panda,stately taurus
+mustang panda,ta416
+mustang panda,tantalum
+mustang panda,temp hex
+mustang panda,twill typhoon
+oilrig,apt 34
+oilrig,apt34
+oilrig,atk40
+oilrig,cobalt gypsy
+oilrig,cobalt gypsym
+oilrig,crambus
+oilrig,crambus siamesekitten
+oilrig,europium
+oilrig,evasive serpens
+oilrig,g0049
+oilrig,hazel sandstorm
+oilrig,helix kitten
+oilrig,irn2
+oilrig,lyceum
+oilrig,ta452
+oilrig,twisted kitten
+patchwork,
+sandworm,apt44
+sandworm,blue echidna
+sandworm,electrum
+sandworm,frozenbarents
+sandworm,g0034
+sandworm,iridium
+sandworm,iron viking
+sandworm,quedagh
+sandworm,seashell blizzard
+sandworm,telebots
+sandworm,temp noble
+sandworm,uac 0082
+sandworm,uac 0113
+sandworm,voodoo bear
+sharp panda,apt19
+sharp panda,deep panda
+sidecopy,
+silent chollima,andariel
+silent chollima,gop
+silent chollima,guardian of peace
+silent chollima,onyx sleet
+silent chollima,operationtroy
+silent chollima,plutonium
+silent chollima,subgroup  andariel
+silent chollima,whois team
+transparent tribe,apt36
+turla,atk13
+turla,blue python
+turla,g0010
+turla,group 88
+turla,hippo team
+turla,iron hunter
+turla,itg12
+turla,krypton
+turla,makersmark
+turla,pacifier apt
+turla,pfinet
+turla,popeye
+turla,secret blizzard
+turla,sig23
+turla,snake
+turla,summit
+turla,tag 0530
+turla,uac 0003
+turla,uac 0024
+turla,uac 0144
+turla,unc4210
+turla,uroburos
+turla,venomous bear
+turla,waterbug
+turla,wraith
+unc2452,apt29
+unc2452,cozy bear
+unc2452,darkhalo
+unc2452,midnight blizzard
+unc2452,nobelium
+unc2452,solar phoenix
+unc2452,stellarparticle
+windshift,windy phoenix
+Team46, TaxOff
+Sykipot, Maverick Panda 
+Andariel, Onyx Sleet 
+Sharp Dragon, Sharp Panda
+SharpDragon, SharpPanda

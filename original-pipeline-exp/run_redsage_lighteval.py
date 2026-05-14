@@ -469,9 +469,12 @@ Setup:
     manifest["status"] = "completed" if exit_code == 0 else f"failed (exit code {exit_code})"
     manifest["completed_at"] = datetime.now().isoformat()
     if jsonl_count:
-        manifest["jsonl_responses_pattern"] = os.path.join(
-            output_dir, "responses_redsage_logprob_*.jsonl"
+        jsonl_pattern = (
+            "responses_redsage_generative_*.jsonl"
+            if args.task_mode == "generative"
+            else "responses_redsage_logprob_*.jsonl"
         )
+        manifest["jsonl_responses_pattern"] = os.path.join(output_dir, jsonl_pattern)
         manifest["jsonl_rows_total"] = jsonl_count
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
