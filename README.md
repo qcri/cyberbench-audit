@@ -3,25 +3,6 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-> **A systematic meta-evaluation of cybersecurity LLM benchmarks with unified evaluation harness and reproducible scoring protocols.**
-
-## Overview
-
-The cybersecurity LLM evaluation ecosystem has expanded rapidly, yielding **11 benchmark families** and **5 security-specialized models** between 2023-2025—yet no systematic analysis of their quality, coverage, or mutual consistency exists. This repository provides:
-
-- **Two-axis taxonomy** separating knowledge benchmarks (factual recall, CTI reasoning, structured extraction) from capability benchmarks (adversarial robustness, offensive operations)
-- **Five-dimension meta-evaluation framework** (D1-D5) for assessing benchmark quality
-- **Unified evaluation harness** supporting 20+ cybersecurity tasks across 9 benchmark families
-- **Reproducible benchmarking protocol** addressing seven critical gaps in current evaluation practices
-
-### Key Findings
-
-1. **Circular evaluation cluster**: CTI-Bench, AthenaBench, SECURE, and RedSage model all originate from the same research group
-2. **Protocol bugs**: ATT&CK Technique Extraction (ATE) task scores 0% F₁ universally due to regex evaluation discarding semantically correct responses
-3. **Ceiling effects**: Three SECURE tasks saturate at 100% accuracy with base 8B instruction-tuned models
-4. **Backend sensitivity**: Evaluation backend choice (HuggingFace vs. vLLM) changes accuracy from 57.89% to 47.50% on identical responses
-5. **Multilingual gap**: Arabic is entirely absent from all 12 benchmarks and all 5 security LLMs
-6. **Harness fragmentation**: Three incompatible evaluation harnesses prevent cross-paper model comparisons
 
 ## Meta-Evaluation Framework
 
@@ -38,31 +19,16 @@ Our framework assesses benchmarks across six dimensions:
 
 ## Supported Benchmarks
 
-### Knowledge Benchmarks (21 Tasks)
+The unified pipeline supports 24+ sub-tasks across:
 
-#### CTI-Bench (RISys-Lab)
-- **MCQ**: Multiple-choice cybersecurity knowledge
-- **RCM**: CWE (Common Weakness Enumeration) identification
-- **VSP**: CVSS vector scoring and prediction
-- **ATE**: ATT&CK technique extraction
-- **TAA**: Threat actor attribution
+- **CTI-Bench**: MCQ, RCM, VSP, ATE (+ CTI-Bench TAA via TSV subset)
+- **AthenaBench**: CKT, RMS (+ expanded extraction subsets and TAA)
+- **SECURE**: MAET, CWET, KCV
+- **SecEval** · **CyberMetric-500** · **CISSP** · **SecBench** · **MMLU-CS**
+- **RedSage-MCQ**: Frameworks, Generals, Skills, CLI, Kali
+- **SEvenLLM-Bench**: English subset (structured CTI extraction)
 
-#### AthenaBench (GitHub JSONL)
-- **CKT**: Cybersecurity knowledge testing
-- **RMS**: Mitigation strategy identification
-
-#### SECURE
-- **MAET**: Multi-aspect evaluation task
-- **CWET**: CWE enumeration task
-- **KCV**: Knowledge comprehension and verification
-
-#### General Cybersecurity Benchmarks
-- **SecEval**: 2,126 cybersecurity knowledge questions (multi-select MCQ)
-- **CyberMetric-500**: Expert-curated cybersecurity questions
-- **CISSP**: Certification exam questions
-- **SecBench**: Large-scale security benchmark (44,823 items)
-- **MMLU-CS**: Computer security subset of MMLU
-- **RedSage-Bench**: 5 categories (Frameworks, Generals, Skills, CLI, Kali)
+See `unified-benchmark-pipeline/README.md` for the authoritative task list and exact `--tasks` names.
 
 ## Installation
 ### Containerized (Docker) Setup
@@ -104,131 +70,140 @@ Once inside the container, you can run all scripts as described below.
 git clone https://github.com/yourusername/BenchmarkingSecBenchmarks.git
 cd BenchmarkingSecBenchmarks
 
+# (Optional) create a virtualenv
+python -m venv .venv
+source .venv/bin/activate
+
 # Install dependencies
 pip install -r requirements.txt
-
-# Optional: Install vLLM for fast batched inference
-pip install vllm
 ```
 
 ## Usage
 
-### 1. Collect Model Responses
+The actively maintained end-to-end implementation lives under `unified-benchmark-pipeline/`.
+Legacy scripts are kept under `original-pipeline-exp/` for comparison.
 
-Run inference on benchmarks and save responses as JSONL:
+### 1. Collect Model Responses (unified pipeline)
+
+Run inference and save raw responses as JSONL (one file per task):
 
 ```bash
+cd unified-benchmark-pipeline
+
 python run_inference_benchmarks.py \
   --model_path "meta-llama/Llama-3.1-8B-Instruct" \
-  --benchmarks ctibench_mcq seceval cybermetric cissp \
-  --output_dir ./outputs \
-  --temperature 0.1 \
-  --max_tokens 1024
+  --use_vllm \
+  --tasks mcq rcm vsp ate seceval cybermetric cissp \
+  --cissp_path ../cissp.json \
+  --output_dir outputs/responses_llama31_8b
 ```
 
-**Supported benchmark flags:**
-- `ctibench_mcq`, `ctibench_rcm`, `ctibench_vsp`, `ctibench_ate`, `ctibench_taa`
-- `athenabench_ckt`, `athenabench_rms`
+**Common task names (`--tasks`)**
+- `mcq`, `seceval`, `cybermetric`, `cissp`, `mmlu-cs`, `secbench`
+- `rcm`, `vsp`, `ate` (structured extraction)
+- `ckt`, `rms`, `taa`, `cti_taa`, `athena_ate`, `athena_rcm`, `athena_vsp`
 - `secure_maet`, `secure_cwet`, `secure_kcv`
-- `seceval`, `cybermetric`, `cissp`, `secbench`, `mmlu_cs`
 - `redsage_frameworks`, `redsage_generals`, `redsage_skills`, `redsage_cli`, `redsage_kali`
+- `sevenllm`
 
-**Optional arguments:**
-- `--base_model`: Base model name (optional for some models)
-- `--is_base`: Load as base model without adapters
-- `--use_vllm`: Use vLLM for fast batched inference
-- `--vllm_gpu_memory_utilization`: GPU memory utilization (default: 0.9)
+**Notes**
+- `--use_vllm` is optional (local HF inference also works but is slower).
+- `--skip_completed` skips tasks that already have a JSONL output file.
+- `--n_api_workers` enables parallel collection when using `--use_api`.
 
-### 2. Evaluate with Regex (Original Protocol)
+### 2. Evaluate with LLM Judge (recommended)
+
+Judging produces a `{output}_detailed/` directory containing `results.json`,
+`summary.json`, and `<task>_detailed.jsonl` files.
 
 ```bash
+cd unified-benchmark-pipeline
+
+# 1) Copy env template and set judge credentials
+cp .env.example .env
+# edit .env to set AZURE_API_KEY, AZURE_ENDPOINT, AZURE_DEPLOYMENT_NAME
+
+# 2) Judge previously collected responses
+python run_evaluate_llm_judge.py \
+  --response_dir outputs/responses_llama31_8b \
+  --judge_use_api \
+  --judge_api_endpoint "$AZURE_ENDPOINT" \
+  --judge_api_model "$AZURE_DEPLOYMENT_NAME" \
+  --output outputs/judge_llama31_8b/eval_results
+```
+
+Supported judge API styles:
+- `chat_completions` (default)
+- `azure_responses` (Azure Responses API)
+- `anthropic_messages` (Anthropic /v1/messages pass-through)
+
+Select via `--judge_api_style`.
+
+### 3. Regex evaluation baseline (legacy)
+
+If you need the original regex-style baseline, use the legacy pipeline scripts
+under `original-pipeline-exp/`.
+
+```bash
+cd original-pipeline-exp
+
 python evaluate.py \
   --model_path "meta-llama/Llama-3.1-8B-Instruct" \
-  --tasks mcq rcm vsp ate cybermetric seceval cissp \
-  --output eval_results.json
+  --tasks mcq rcm vsp ate seceval cybermetric cissp \
+  --cissp_path ../cissp.json \
+  --output eval_results_regex.json
 ```
 
-**Note**: This uses regex-based extraction and is provided for baseline comparison. Known to fail on structured extraction tasks (ATE, RCM, RMS).
-
-**Optional arguments:**
-- `--use_api`: Use API endpoint instead of local model
-- `--max_samples`: Limit samples per task (for testing)
-- `--cissp_path`: Path to CISSP dataset JSON file
-
-### 3. Evaluate with LLM Judge (Recommended)
-
-Robust evaluation using LLM-as-a-Judge:
-
-```bash
-python run_evaluate_llm_judge.py \
-  --responses_dir ./outputs \
-  --judge_model "meta-llama/Llama-3.1-8B-Instruct" \
-  --output_file results_llm_judge.json \
-  --temperature 0.0
-```
-
-**LLM Judge advantages:**
-- Handles prose responses with embedded IDs (e.g., "The technique is T1566 (Phishing)")
-- Semantic matching for equivalent answers
-- Normalizes CWE/MITRE ID formats
-- Prevents systematic 0% F₁ failures
-
-**Optional arguments:**
-- `--use_api`: Use API endpoint instead of local model
-- `--api_endpoint`: OpenAI-compatible API endpoint
-- `--api_key`: API authentication key
-- `--judge_backend`: `transformers` or `vllm`
-
-### 4. API-based Evaluation
+### 4. API-based inference (hosted/commercial models)
 
 Evaluate commercial or hosted models:
 
 ```bash
+cd unified-benchmark-pipeline
+
 python run_inference_benchmarks.py \
   --use_api \
+  --api_style chat_completions \
   --api_endpoint "https://api.openai.com/v1/chat/completions" \
   --api_key "sk-..." \
-  --model_name "gpt-4" \
-  --benchmarks ctibench_mcq seceval \
-  --output_dir ./outputs_api
+  --api_model "gpt-4" \
+  --tasks seceval cybermetric \
+  --output_dir outputs/responses_gpt4
 ```
 
 **Azure OpenAI support:**
 ```bash
+cd unified-benchmark-pipeline
+
 python run_inference_benchmarks.py \
   --use_api \
+  --api_style chat_completions \
   --api_endpoint "https://YOUR_RESOURCE.openai.azure.com" \
   --api_key "YOUR_AZURE_KEY" \
-  --model_name "YOUR_DEPLOYMENT_NAME" \
-  --api_version "2024-02-15-preview" \
-  --benchmarks seceval
+  --api_model "YOUR_DEPLOYMENT_NAME" \
+  --tasks seceval
 ```
 
 ## Project Structure
 
 ```
 BenchmarkingSecBenchmarks/
-├── evaluate.py                      # Regex-based evaluation (baseline)
-├── run_inference_benchmarks.py      # Collect model responses (JSONL)
-├── run_evaluate_llm_judge.py        # LLM-judge evaluation (recommended)
 ├── requirements.txt                 # Python dependencies
-├── .gitignore                       # Git ignore patterns
-├── outputs/                         # Saved model responses (JSONL)
-└── experiment/                      # Paper experiments & analysis
-    ├── run_all_experiments.py       # Master orchestrator (runs all 7 scripts)
-    ├── 01_full_scale_evaluation.py  # Main evaluation (7 models × 21 tasks)
-    ├── 02_risys_cluster_analysis.py # Circular evaluation analysis
-    ├── 03_ate_protocol_analysis.py  # ATE format sensitivity bug
-    ├── 04_secure_ceiling_analysis.py # SECURE ceiling effects
-    ├── 05_backend_variance_analysis.py # HF vs vLLM comparison
-    ├── 06_generate_framework_visualizations.py # Create plots
-    ├── 07_generate_reports.py       # Practitioner guides
-    └── README.md                     # Detailed experiment documentation
+├── unified-benchmark-pipeline/      # Current end-to-end pipeline (recommended)
+│   ├── run_inference_benchmarks.py  # Collect responses (JSONL)
+│   ├── run_evaluate_llm_judge.py    # LLM-as-judge evaluation
+│   ├── analysis/                    # Re-runnable post-judge analysis (+ lib/)
+│   └── experiment/                  # Full-scale experiment driver
+├── original-pipeline-exp/           # Legacy scripts kept for comparison
+├── experiment/                      # Paper-oriented scripts (legacy; may reference old paths)
+└── Paper/                           # LaTeX paper sources
 ```
 
 ## Running Paper Experiments
 
-For reproducing paper results (Section 5 - Empirical Evaluation):
+For paper-oriented reproduction scripts and visualizations, use `experiment/`.
+For the maintained end-to-end pipeline (inference → judge → analysis), use
+`unified-benchmark-pipeline/`.
 
 ```bash
 cd experiment/
@@ -246,7 +221,7 @@ This runs all 7 experiment scripts and generates:
 - Framework visualizations (heatmaps, scatter plots)
 - Practitioner guides and recommendations
 
-See [experiment/README.md](experiment/README.md) for detailed documentation.
+See `experiment/README.md` for paper-script details, and `unified-benchmark-pipeline/README.md` + `unified-benchmark-pipeline/analysis/README.md` for the maintained pipeline workflows.
 
 
 ## License
