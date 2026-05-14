@@ -1,0 +1,23 @@
+{
+  "model_path": "meta-llama/Llama-3.1-8B-Instruct",
+  "evaluation_mode": "local",
+  "is_base_model": false,
+  "timestamp": "2026-04-09T14:29:50.120158",
+  "tasks": [
+    "mcq",
+    "rcm",
+    "vsp",
+    "ate",
+    "ckt",
+    "rms",
+    "taa",
+    "secure_maet",
+    "secure_cwet",
+    "secure_kcv",
+    "seceval",
+    "cybermetric",
+    "mmlu-cs",
+    "cissp"
+  ],
+  "max_samples": 5
+}

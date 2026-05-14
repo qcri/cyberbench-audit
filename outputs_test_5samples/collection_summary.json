@@ -1,0 +1,58 @@
+{
+  "mcq": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/mcq_responses.jsonl"
+  },
+  "rcm": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/rcm_responses.jsonl"
+  },
+  "vsp": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/vsp_responses.jsonl"
+  },
+  "ate": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/ate_responses.jsonl"
+  },
+  "ckt": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/ckt_responses.jsonl"
+  },
+  "rms": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/rms_responses.jsonl"
+  },
+  "taa": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/taa_responses.jsonl"
+  },
+  "secure_maet": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/secure_maet_responses.jsonl"
+  },
+  "secure_cwet": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/secure_cwet_responses.jsonl"
+  },
+  "secure_kcv": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/secure_kcv_responses.jsonl"
+  },
+  "seceval": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/seceval_responses.jsonl"
+  },
+  "cybermetric": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/cybermetric_responses.jsonl"
+  },
+  "mmlu-cs": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/mmlu-cs_responses.jsonl"
+  },
+  "cissp": {
+    "samples_collected": 5,
+    "output_file": "./outputs_test_5samples/cissp_responses.jsonl"
+  }
+}

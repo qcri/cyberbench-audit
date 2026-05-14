@@ -1,0 +1,6 @@
+{
+  "sevenllm": {
+    "samples_collected": 10,
+    "output_file": "outputs_sevenllm_test/sevenllm_responses.jsonl"
+  }
+}

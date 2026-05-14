@@ -1,0 +1,21 @@
+# Environment / secrets
+.env
+
+# Generated analysis output (figures, CSVs, JSONs);
+# reproduce with `cd unified-benchmark-pipeline && PYTHONPATH=. python -m analysis.<script>`
+analysis/reports/
+analysis/report.pdf
+analysis/report.log
+
+# Log files (run logs, SLURM stderr/stdout)
+*.log
+
+# Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store

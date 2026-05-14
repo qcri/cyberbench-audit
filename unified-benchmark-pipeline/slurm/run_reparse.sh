@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=reparse_qwen
+#SBATCH --output=/export/home/aberriche/BenchBench/BenchmarkingSecBenchmarks/slurm/logs/reparse_%j.out
+#SBATCH --error=/export/home/aberriche/BenchBench/BenchmarkingSecBenchmarks/slurm/logs/reparse_%j.err
+#SBATCH --partition=gpu-all
+#SBATCH --qos=20gpus
+#SBATCH --time=00:05:00
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=4G
+#SBATCH --gres=gpu:0
+/export/home/aberriche/miniconda3/envs/vllm/bin/python /export/home/aberriche/BenchBench/BenchmarkingSecBenchmarks/slurm/reparse_qwen.py

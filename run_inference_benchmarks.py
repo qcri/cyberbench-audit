@@ -1,33 +1,62 @@
 #!/usr/bin/env python3
 """
-Collect raw LLM responses from cybersecurity benchmarks without evaluation.
-Responses are saved in JSONL format for later evaluation (regex or LLM judge).
+Collect model outputs from cybersecurity benchmark tasks in a benchmark-faithful format.
 
-Supported benchmarks:
-- CTI-Bench (RISys-Lab HF): MCQ, RCM, VSP, ATE
-- CTI-Bench (maveryn TSV): cti_taa
-- MMLU Computer Security
-- SECURE: MAET, CWET, KCV
-- SecBench
-- RedSageMCQ: 5 subsets (Frameworks, Generals, Skills, CLI, Kali)
-- CyberMetric-500
-- AthenaBench (GitHub JSONL): CKT, RMS, TAA, athena_ate, athena_rcm, athena_vsp
-- SecEval
-- CISSP
-- SEvenLLM-Bench (English subset, structured CTI extraction)
+This script focuses on response collection, not final benchmark aggregation. For most
+tasks, it saves raw model responses to JSONL so that benchmark-specific evaluators
+(regex, exact match, LLM judge, or custom scoring scripts) can run later.
+
+Some tasks also include local-HF scoring-style collection modes when the original
+benchmark relies on log-likelihood rather than generated text. For example,
+mmlu-cs-logprobs computes answer-choice logprobs locally to better mirror the
+original MMLU evaluation.
+
+Supported benchmark families:
+- CTI-Bench original TSVs: MCQ, RCM, RCM-2021, VSP, ATE, TAA
+- AthenaBench original JSONL: CKT, ATE, RCM, RMS, VSP, TAA
+- SECURE original TSVs: MAET, CWET, KCV
+- SecEval official chat few-shot mode
+- CyberMetric-500 original evaluator prompt
+- MMLU Computer Security:
+  - mmlu-cs: original 5-shot prompt with generated response collection
+  - mmlu-cs-logprobs: local-HF official-style logprob scoring
+- SecBench MCQ original data with reconstructed prompt
+- RedSageMCQ five subsets using RedSage cybersec_prompt_fn-style generation
+- CISSP custom/local dataset collection
 """
 
 import os
-import re
 import json
+
+import pandas as pd
+import numpy as np
+from io import StringIO
 import torch
 import requests
 import argparse
+import re
 from tqdm import tqdm
 from datasets import load_dataset, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
+
+SEVENLLM_PROMPT_DICT = {
+    "prompt_input": (
+        "Below is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
+    ),
+    "prompt_input_qwen": (
+        "<|im_start|>user\nBelow is an instruction that describes a task, paired with an input that provides further context. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Input:\n{input}### Response:<|im_end|>\n<|im_start|>assistant\n"
+    ),
+    "prompt_no_input": (
+        "Below is an instruction that describes a task. "
+        "Write a response that appropriately completes the request.\n\n"
+        "### Instruction:\n{instruction}\n\n### Response:"
+    ),
+}
 
 # Optional peft import for LoRA adapter support
 try:
@@ -44,109 +73,361 @@ try:
     HAS_VLLM = True
 except ImportError:
     HAS_VLLM = False
+   
+# ---------------------------------------------------------------------
+# MMLU helpers
+# ---------------------------------------------------------------------
+MMLU_CHOICES = ["A", "B", "C", "D"]
+
+def format_mmlu_subject(subject: str) -> str:
+    # Faithful to original MMLU format_subject():
+    # "computer_security" -> " computer security"
+    l = subject.split("_")
+    s = ""
+    for entry in l:
+        s += " " + entry
+    return s
 
 
-# SEvenLLM-Bench prompt template (Stanford-Alpaca-style instruction/input wrapper)
-# Used by collect_sevenllm. Qwen variant adds chat-template tokens since SEvenLLM
-# was originally fine-tuned on this exact format.
-SEVENLLM_PROMPT_DICT = {
-    "prompt_input": (
-        "Below is an instruction that describes a task, paired with an input that provides further context. "
-        "Write a response that appropriately completes the request.\n\n"
-        "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:"
-    ),
-    "prompt_input_qwen": (
-        "<|im_start|>user\nBelow is an instruction that describes a task, paired with an input that provides further context. "
-        "Write a response that appropriately completes the request.\n\n"
-        "### Instruction:\n{instruction}\n\n### Input:\n{input}### Response:<|im_end|>\n<|im_start|>assistant\n"
-    ),
-}
-
-# CJK Unified Ideographs range — used to filter SEvenLLM English vs Chinese samples
-_CHINESE_CHAR_RE = re.compile(r"[一-鿿]")
+def mmlu_answer_letter(answer_val):
+    if isinstance(answer_val, int):
+        return MMLU_CHOICES[answer_val]
+    return str(answer_val).strip()
 
 
-def is_non_chinese_sample(text: str) -> bool:
-    """Return True if text contains no CJK ideographs.
+def format_mmlu_example(sample: dict, include_answer: bool = True) -> str:
+    prompt = sample["question"]
+    choices = sample["choices"]
 
-    SEvenLLM-Bench is bilingual (650 EN + 650 ZH); we filter on the *input*
-    field since some instructions are templated and may share wording.
+    for j in range(len(choices)):
+        prompt += "\n{}. {}".format(MMLU_CHOICES[j], choices[j])
+
+    prompt += "\nAnswer:"
+
+    if include_answer:
+        prompt += " {}\n\n".format(mmlu_answer_letter(sample["answer"]))
+
+    return prompt
+
+
+def gen_mmlu_prompt(dev_rows: list, subject: str, k: int = -1) -> str:
+    prompt = "The following are multiple choice questions (with answers) about {}.\n\n".format(
+        format_mmlu_subject(subject)
+    )
+
+    if k == -1:
+        k = len(dev_rows)
+
+    for i in range(k):
+        prompt += format_mmlu_example(dev_rows[i], include_answer=True)
+
+    return prompt
+
+
+def build_mmlu_full_prompt(dev_rows: list, test_sample: dict, subject: str, ntrain: int = 5) -> tuple:
+    k = min(ntrain, len(dev_rows))
+    prompt_end = format_mmlu_example(test_sample, include_answer=False)
+    train_prompt = gen_mmlu_prompt(dev_rows, subject, k)
+    prompt = train_prompt + prompt_end
+    return prompt, k
+
+
+def score_mmlu_next_token_vllm(vllm_llm, tokenizer, prompt: str) -> dict:
     """
-    return not bool(_CHINESE_CHAR_RE.search(text or ""))
+    Official-style MMLU scoring using vLLM.
 
-
-def load_tsv_dataset(source: str) -> Dataset:
-    """Load a TSV file (URL or local path) into a HuggingFace Dataset.
-
-    Used for CTI-Bench tasks (the maveryn/cti-bench repo serves TSV files
-    directly; not all subsets are mirrored on the RISys-Lab HF dataset).
+    Equivalent to the original OpenAI Completion path:
+        max_tokens=1, logprobs=100, temperature=0, echo=True
+    vLLM exposes next-token logprobs via SamplingParams(logprobs=N, max_tokens=1).
+    The raw 5-shot prompt is passed directly — no chat template — matching the
+    original completion-style evaluation.
     """
+    # vLLM caps logprobs at 20 in some versions; 20 is sufficient since we only
+    # need " A", " B", " C", " D" to appear in the top-N — they virtually always do.
+    sampling_params = SamplingParams(max_tokens=1, temperature=0, logprobs=20)
+    outputs = vllm_llm.generate([prompt], sampling_params)
+    # logprobs[0] = {token_id: Logprob} for the first (only) generated token,
+    # which is the model's next-token distribution over the full vocabulary.
+    first_pos = outputs[0].outputs[0].logprobs[0]  # dict[int, Logprob]
+
+    # tokenizer=None when --use_vllm is active; pull it from the LLM object.
+    if tokenizer is None:
+        tokenizer = vllm_llm.get_tokenizer()
+
+    lprobs = []
+    token_info = {}
+
+    for ans in MMLU_CHOICES:
+        token_text = " " + ans
+        token_ids = tokenizer.encode(token_text, add_special_tokens=False)
+        tid = token_ids[0]
+
+        if tid in first_pos:
+            lp = first_pos[tid].logprob
+            note = "single-token exact" if len(token_ids) == 1 else "multi-token fallback first-token"
+        else:
+            lp = -100.0
+            note = "not in top-100 logprobs; assigned -100"
+
+        lprobs.append(lp)
+        token_info[ans] = {"token_text": token_text, "token_ids": token_ids,
+                           "logprob": lp, "scoring_note": note}
+
+    lprobs_np = np.array(lprobs)
+    probs = np.exp(lprobs_np - np.max(lprobs_np))
+    probs = probs / probs.sum()
+    pred = MMLU_CHOICES[int(np.argmax(lprobs_np))]
+
+    return {
+        "prediction": pred,
+        "logprobs": {MMLU_CHOICES[i]: float(lprobs_np[i]) for i in range(4)},
+        "probs":    {MMLU_CHOICES[i]: float(probs[i])    for i in range(4)},
+        "token_info": token_info,
+    }
+
+
+def score_mmlu_next_token_local(model, tokenizer, prompt: str):
+    """
+    Official-style MMLU scoring for local HF models.
+
+    Original OpenAI path:
+    - max_tokens=1
+    - logprobs=100
+    - temperature=0
+    - echo=True
+    - compare logprobs of " A", " B", " C", " D"
+    """
+    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    next_token_logits = outputs.logits[0, -1, :]
+    next_token_logprobs = torch.log_softmax(next_token_logits, dim=-1)
+
+    lprobs = []
+    token_info = {}
+
+    for ans in MMLU_CHOICES:
+        token_text = " " + ans
+        token_ids = tokenizer.encode(token_text, add_special_tokens=False)
+
+        if len(token_ids) == 1:
+            lp = next_token_logprobs[token_ids[0]].item()
+            token_info[ans] = {
+                "token_text": token_text,
+                "token_ids": token_ids,
+                "scoring_note": "single-token exact",
+            }
+        else:
+            lp = next_token_logprobs[token_ids[0]].item()
+            token_info[ans] = {
+                "token_text": token_text,
+                "token_ids": token_ids,
+                "scoring_note": "multi-token fallback scored first token only",
+            }
+
+        lprobs.append(lp)
+
+    lprobs_np = np.array(lprobs)
+    probs = np.exp(lprobs_np - np.max(lprobs_np))
+    probs = probs / probs.sum()
+
+    pred = MMLU_CHOICES[int(np.argmax(lprobs_np))]
+
+    return {
+        "prediction": pred,
+        "logprobs": {MMLU_CHOICES[i]: float(lprobs_np[i]) for i in range(len(MMLU_CHOICES))},
+        "probs": {MMLU_CHOICES[i]: float(probs[i]) for i in range(len(MMLU_CHOICES))},
+        "token_info": token_info,
+    }
+
+# ---------------------------------------------------------------------
+# RedSageMCQ helpers
+# ---------------------------------------------------------------------
+REDSAGE_CHOICES = ["A", "B", "C", "D"]
+
+def build_redsage_prompt(sample: dict, include_context: bool = False) -> str:
+    """
+    Build the RedSageMCQ prompt using the RedSage cybersec_prompt_fn layout.
+
+    RedSageMCQTask defaults to include_context=False for the released five MCQ
+    subsets, so this function does not include the row's content field unless
+    explicitly requested.
+
+    This prompt is used by both RedSage's default loglikelihood tasks and its
+    _em generative tasks. This script currently uses it for _em-style response
+    collection.
+    """
+    content = sample.get("content", "")
+    question = sample["question"]
+    answers_dict = sample["answers"]
+
+    query_parts = []
+
+    if include_context and content:
+        query_parts.append("Context: " + content)
+
+    query_parts.append("Question: " + question)
+
+    choices_str_parts = []
+    for letter in REDSAGE_CHOICES:
+        choice_text = answers_dict.get(letter)
+        if choice_text is None:
+            raise ValueError(f"Missing answer for choice {letter} in sample: {sample}")
+        choices_str_parts.append(f"{letter}. {choice_text}")
+
+    instructions = "You are given multiple choice questions. Answer with the option letter (A, B, C, D) from the given choices directly."
+
+    return (
+        instructions
+        + "\n"
+        + "\n\n".join(query_parts)
+        + "\n"
+        + "\n".join(choices_str_parts)
+        + "\nAnswer:"
+    )
+
+
+def redsage_answer_letter(answer_val):
+    return str(answer_val).strip().upper()
+
+
+def apply_stop_sequence(text: str, stop_sequence=None) -> str:
+    if not stop_sequence:
+        return text
+
+    earliest = None
+    for stop in stop_sequence:
+        pos = text.find(stop)
+        if pos != -1 and (earliest is None or pos < earliest):
+            earliest = pos
+
+    if earliest is None:
+        return text
+
+    return text[:earliest].strip()
+
+# Helpers:
+def load_json_dataset(source: str):
     if source.startswith("http://") or source.startswith("https://"):
-        resp = requests.get(source, timeout=60)
-        resp.raise_for_status()
-        text = resp.text
+        response = requests.get(source, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+    with open(source, "r", encoding="utf-8") as f:
+        return json.load(f)
+    
+def load_concatenated_json_objects(source: str) -> list:
+    """Load SecBench-style data where JSON objects may be newline-separated or concatenated."""
+    if source.startswith("http://") or source.startswith("https://"):
+        response = requests.get(source, timeout=30)
+        response.raise_for_status()
+        text = response.text
     else:
         with open(source, "r", encoding="utf-8") as f:
             text = f.read()
 
-    # Manual TSV parse: first line = header, subsequent = rows. We avoid pandas
-    # to keep dependencies minimal and to mirror the existing JSONL collector.
-    lines = text.splitlines()
-    if not lines:
-        return Dataset.from_list([])
-    header = lines[0].split("\t")
-    rows = []
-    for line in lines[1:]:
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        if len(parts) < len(header):
-            parts = parts + [""] * (len(header) - len(parts))
-        rows.append(dict(zip(header, parts[:len(header)])))
-    return Dataset.from_list(rows)
+    decoder = json.JSONDecoder()
+    idx = 0
+    data = []
+
+    while idx < len(text):
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
+        if idx >= len(text):
+            break
+
+        obj, end = decoder.raw_decode(text, idx)
+        data.append(obj)
+        idx = end
+
+    return data    
+
+#To load TSV datasets (for CTI-Bench)
+def load_tsv_dataset(source: str) -> Dataset:
+    if source.startswith("http://") or source.startswith("https://"):
+        response = requests.get(source, timeout=30)
+        response.raise_for_status()
+        df = pd.read_csv(StringIO(response.text), sep="\t", encoding="utf-8")
+    else:
+        df = pd.read_csv(source, sep="\t", encoding="utf-8")
+
+    # Keep values as strings where possible, but preserve missing fields.
+    data = df.replace({np.nan: None}).to_dict(orient="records")
+    return Dataset.from_list(data)
 
 
 def get_task_type(task_name: str) -> str:
-    """Map task name to evaluation type for LLM judge.
-
-    This centralizes the task type mapping so the judge can read it from
-    response metadata without hard-coding every benchmark name.
-    """
     task_type_map = {
-        # MCQ-style tasks (single choice A/B/C/D)
+        # CTI-Bench
+        "ctibench_mcq": "mcq",
+        "ctibench_rcm": "rcm",
+        "ctibench_rcm_2021": "rcm",
+        "ctibench_vsp": "vsp",
+        "ctibench_ate": "ate",
+        "ctibench_taa": "taa",
+
+        # Backward-compatible CTI aliases
         "mcq": "mcq",
+        "rcm": "rcm",
+        "vsp": "vsp",
+        "ate": "ate",
+        "cti_taa": "taa",
+
+        # AthenaBench
+        "athenabench_ckt": "ckt",
+        "athenabench_ate": "ate",
+        "athenabench_rcm": "rcm",
+        "athenabench_rms": "rms",
+        "athenabench_vsp": "vsp",
+        "athenabench_taa": "taa",
+
+        # Backward-compatible Athena aliases
+        "ckt": "ckt",
+        "rms": "rms",
+        "taa": "taa",
+
+        # SECURE
+        "secure_maet": "secure_mcq",
+        "secure_cwet": "secure_mcq",
+        "secure_kcv": "secure_mcq",
+        "secure_cpst": "secure_saq",
+        "secure_rert": "secure_saq",
+        "secure_vood": "secure_tf",
+
+        # Other MCQ-style
         "cybermetric": "mcq",
+        "cybermetric_paper": "mcq",
         "cissp": "mcq",
+        "mmlu_cs": "mcq",
         "mmlu-cs": "mcq",
+        "mmlu-cs-logprobs": "mcq",
+        "secbench_mcq": "mcq",
         "secbench": "mcq",
-        "ckt": "ckt",  # 5-option MCQ (A/B/C/D/E)
-        "secure_maet": "secure",
-        "secure_cwet": "secure",
-        "secure_kcv": "secure",
+
+        # RedSage
         "redsage_frameworks": "mcq",
         "redsage_generals": "mcq",
         "redsage_skills": "mcq",
         "redsage_cli": "mcq",
         "redsage_kali": "mcq",
 
-        # Multi-select MCQ
+        # Multi-select
         "seceval": "seceval",
-
+        
         # Structured extraction tasks
-        "rcm": "rcm",  # CWE ID extraction (CTI-Bench)
-        "athena_rcm": "rcm",  # CWE ID extraction (AthenaBench)
-        "vsp": "vsp",  # CVSS vector extraction (CTI-Bench)
-        "athena_vsp": "vsp",  # CVSS vector extraction (AthenaBench)
-        "ate": "ate",  # MITRE ATT&CK techniques (CTI-Bench)
-        "athena_ate": "ate",  # MITRE ATT&CK techniques (AthenaBench, expanded)
+        "rcm": "rcm",  # CWE ID extraction
+        "vsp": "vsp",  # CVSS vector extraction
+        "ate": "ate",  # MITRE ATT&CK techniques
         "rms": "rms",  # Risk mitigation strategies
         "taa": "taa",  # Threat actor attribution (AthenaBench)
         "cti_taa": "taa",  # Threat actor attribution (CTI-Bench)
-
-        # SEvenLLM-Bench (multi-category structured CTI extraction)
-        "sevenllm": "sevenllm",
+        # SEvenLLM-Bench tasks (structured JSON extraction)
+        "sevenllm": "sevenllm",  # Multi-category CTI extraction tasks
     }
-    return task_type_map.get(task_name, "mcq")  # Default to MCQ
+    return task_type_map.get(task_name, "mcq")
 
 
 def load_model_and_tokenizer(model_path: str, base_model: str = None, is_base: bool = False):
@@ -206,11 +487,13 @@ def load_model_and_tokenizer(model_path: str, base_model: str = None, is_base: b
 
 def chat_completion_api(endpoint: str, model_name: str, prompt: str = None,
                        api_key: str = "", max_tokens: int = 1024,
-                       temperature: float = 0.0, retries: int = 3,
-                       system_prompt: str = None, messages: list = None,
-                       api_version: str = "2024-12-01-preview") -> str:
-    """Call Azure OpenAI chat completions API using the official SDK."""
-    from openai import AzureOpenAI
+                       temperature: float = 0.0, top_p: float = 1.0,
+                       seed: int = None, retries: int = 3,
+                       system_prompt: str = None, messages: list = None) -> str:
+    """Call OpenAI-compatible API endpoint"""
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     if messages is None:
         messages = []
@@ -219,55 +502,219 @@ def chat_completion_api(endpoint: str, model_name: str, prompt: str = None,
         if prompt is not None:
             messages.append({"role": "user", "content": prompt})
 
-    client = AzureOpenAI(
-        api_version=api_version,
-        azure_endpoint=endpoint,
-        api_key=api_key,
-    )
+    payload = {
+        "model": model_name,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+    if seed is not None:
+        payload["seed"] = seed
 
     for attempt in range(retries):
         try:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                max_completion_tokens=max_tokens,
-                temperature=temperature,
-            )
-            return (response.choices[0].message.content or "").strip()
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
         except Exception as e:
             if attempt < retries - 1:
                 print(f"API call failed (attempt {attempt+1}/{retries}): {e}")
-                import time; time.sleep(2 ** attempt)
+                continue
             else:
                 print(f"API call failed after {retries} attempts: {e}")
                 return f"ERROR: {str(e)}"
-    return f"ERROR: exhausted retries"
 
 
-# Kept for backward compatibility — delegates to chat_completion_api
-def chat_responses_api(endpoint: str, model_name: str, prompt: str = None,
-                       api_key: str = "", max_tokens: int = 1024,
-                       temperature: float = 0.0, retries: int = 3,
-                       system_prompt: str = None, messages: list = None) -> str:
-    return chat_completion_api(endpoint, model_name, prompt=prompt,
-                               api_key=api_key, max_tokens=max_tokens,
-                               temperature=temperature, retries=retries,
-                               system_prompt=system_prompt, messages=messages)
+def chat_completion_azure_openai(endpoint: str, model_name: str, prompt: str = None,
+                                  api_key: str = "", max_tokens: int = 1024,
+                                  temperature: float = 0.0, top_p: float = 1.0,
+                                  seed: int = None, retries: int = 3,
+                                  system_prompt: str = None, messages: list = None) -> str:
+    """Call Azure OpenAI Responses API (api-version=2025-04-01-preview).
+
+    Endpoint format: https://<resource>.openai.azure.com/openai/responses?api-version=...
+    Auth: api-key header (not Authorization: Bearer).
+    Payload: model + input list; response in output[0].content[0].text.
+    """
+    headers = {"Content-Type": "application/json", "api-key": api_key}
+
+    if messages is None:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if prompt is not None:
+            messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": model_name,
+        "input": messages,
+        "max_output_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+    # Note: Azure Responses API (2025-04-01-preview) does not support 'seed' parameter
+    # if seed is not None:
+    #     payload["seed"] = seed
+
+    import urllib.request as _urlreq
+    import urllib.error as _urlerr
+
+    # Strip any non-ASCII characters from api_key (e.g. smart quotes from copy-paste)
+    api_key = api_key.encode('ascii', errors='ignore').decode('ascii').strip()
+
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+
+    for attempt in range(retries):
+        try:
+            # Use urllib.request instead of requests to avoid latin-1 codec issues
+            # in http.client when prompt text contains non-ASCII characters.
+            req = _urlreq.Request(
+                endpoint,
+                data=body,
+                headers={"Content-Type": "application/json", "api-key": api_key},
+                method="POST",
+            )
+            with _urlreq.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+            return data["output"][0]["content"][0]["text"]
+        except _urlerr.HTTPError as e:
+            err_body = e.read().decode('utf-8', errors='replace')
+            print(f"Azure HTTP {e.code} (attempt {attempt+1}/{retries}): {err_body[:300]}")
+            if attempt < retries - 1:
+                continue
+            return f"ERROR: HTTP {e.code}: {err_body[:200]}"
+        except Exception as e:
+            print(f"Azure OpenAI API call failed (attempt {attempt+1}/{retries}): {e}")
+            if attempt < retries - 1:
+                continue
+            return f"ERROR: {str(e)}"
+
+
+def chat_completion_azure_claude(endpoint: str, model_name: str, prompt: str = None,
+                                  api_key: str = "", max_tokens: int = 1024,
+                                  temperature: float = 0.0, top_p: float = 1.0,
+                                  seed: int = None, retries: int = 3,
+                                  system_prompt: str = None, messages: list = None) -> str:
+    """Call Azure-hosted Claude via Anthropic Messages API.
+
+    Endpoint format: https://<hub>.services.ai.azure.com/anthropic/v1/messages
+    Auth: x-api-key header + anthropic-version header.
+    System prompt is a top-level field, not a message role.
+    Response in content[0].text.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+
+    if messages is None:
+        messages = []
+        if prompt is not None:
+            messages.append({"role": "user", "content": prompt})
+    # Anthropic API does not accept system role inside messages
+    user_messages = [m for m in messages if m.get("role") != "system"]
+    resolved_system = system_prompt or next(
+        (m["content"] for m in messages if m.get("role") == "system"), None
+    )
+
+    payload = {
+        "model": model_name,
+        "messages": user_messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if resolved_system:
+        payload["system"] = resolved_system
+
+    for attempt in range(retries):
+        try:
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
+            if not response.ok:
+                body = response.content.decode('utf-8', errors='replace')
+                print(f"Azure Claude API error {response.status_code}: {body[:500]}")
+            response.raise_for_status()
+            return response.json()["content"][0]["text"]
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"Azure Claude API call failed (attempt {attempt+1}/{retries}): {e}")
+                continue
+            else:
+                print(f"Azure Claude API call failed after {retries} attempts: {e}")
+                return f"ERROR: {str(e)}"
 
 
 def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int = 1024,
                      use_api: bool = False, use_vllm: bool = False, vllm_model=None,
                      api_endpoint: str = None, api_model: str = None, api_key: str = "",
+                     api_type: str = "openai_compat",
                      batch_size: int = None, system_prompt: str = None,
-                     messages: list = None, api_style: str = "chat_completions",
+                     messages: list = None, task_name: str = None,
+                     temperature: float = 0.0, top_p: float = 1.0, seed: int = None,
                      **kwargs) -> str:
     """Generate response using local inference, vLLM, or API
 
     Args:
+        api_type: One of 'openai_compat' (default), 'azure_openai', 'azure_claude'
         batch_size: Ignored (used only for vLLM config, not here)
         system_prompt: Optional system instruction for chat-style models
         **kwargs: Ignored additional parameters for compatibility
     """
+
+    _api_dispatch = {
+        "openai_compat": chat_completion_api,
+        "azure_openai":  chat_completion_azure_openai,
+        "azure_claude":  chat_completion_azure_claude,
+    }
+    _call_api = _api_dispatch.get(api_type, chat_completion_api)
+
+    # SEVENLLM path: use raw prompt directly
+    if task_name == "sevenllm":
+        if use_api:
+            return _call_api(
+                api_endpoint,
+                api_model,
+                prompt=prompt,
+                api_key=api_key,
+                max_tokens=max_new_tokens,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+        if use_vllm and vllm_model:
+            sampling_params = SamplingParams(
+                max_tokens=max_new_tokens,
+                temperature=0.0,
+                top_p=1.0,
+            )
+            outputs = vllm_model.generate([prompt], sampling_params)
+            return outputs[0].outputs[0].text.strip()
+
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=4096,
+        )
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+
+        response = tokenizer.decode(
+            outputs[0][inputs["input_ids"].shape[1]:],
+            skip_special_tokens=True
+        )
+        return response.strip()
+
     if messages is None:
         messages = []
         if system_prompt:
@@ -276,49 +723,40 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
             messages.append({"role": "user", "content": prompt})
 
     if use_api:
-        if api_style == "anthropic_messages":
-            # Azure-pass-through Anthropic messages API (e.g. claude on Azure).
-            # Reuse evaluate.anthropic_messages_api for retry/error semantics.
-            from evaluate import anthropic_messages_api as _anthropic
-            anth_prompt = prompt
-            if anth_prompt is None and messages:
-                # Concatenate user-content into a single prompt; system msgs ignored
-                # (anthropic separates system from messages — this collector path
-                # doesn't currently use system prompts).
-                anth_prompt = "\n\n".join(
-                    m.get("content", "") for m in messages if m.get("role") == "user"
-                )
-            return _anthropic(
-                api_endpoint,
-                api_model,
-                anth_prompt or "",
-                api_key=api_key,
-                max_tokens=max_new_tokens,
-                temperature=0.0,
-            )
-
-        return chat_completion_api(
+        return _call_api(
             api_endpoint,
             api_model,
             prompt=prompt,
             api_key=api_key,
             max_tokens=max_new_tokens,
-            temperature=0.0,
+            temperature=temperature,
+            top_p=top_p,
+            seed=seed,
             system_prompt=system_prompt,
             messages=messages,
         )
 
     if use_vllm and vllm_model:
-        formatted_prompt = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
+        if tokenizer is not None:
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        else:
+            # vLLM raw-prompt fallback when tokenizer is not loaded separately.
+            if prompt is not None:
+                formatted_prompt = prompt
+            else:
+                formatted_prompt = "\n".join(m.get("content", "") for m in messages)
+
         responses = generate_responses_vllm(
             vllm_model,
             [formatted_prompt],
             max_new_tokens,
-            temperature=0.0
+            temperature=temperature,
+            top_p=top_p,
+            seed=seed,
         )
         return responses[0]
 
@@ -332,14 +770,24 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
     inputs = tokenizer(formatted_prompt, return_tensors="pt", padding=True)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
+    generation_kwargs = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": temperature > 0,
+        "pad_token_id": tokenizer.pad_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+    }
+
+    if temperature > 0:
+        generation_kwargs["temperature"] = temperature
+        generation_kwargs["top_p"] = top_p
+
+    if seed is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-        )
+        outputs = model.generate(**inputs, **generation_kwargs)
 
     response = tokenizer.decode(
         outputs[0][inputs["input_ids"].shape[1]:],
@@ -351,23 +799,14 @@ def generate_response(model, tokenizer, prompt: str = None, max_new_tokens: int 
 def initialize_vllm(model_path: str, base_model: str = None,
                    gpu_memory_utilization: float = 0.9,
                    max_model_len: int = None,
-                   num_gpu_blocks_override: int = None,
                    enforce_eager: bool = False) -> "LLM":
     """Initialize vLLM LLM for fast batch inference
-
+    
     Args:
         model_path: Path to model directory
         base_model: Base model name (if needed)
         gpu_memory_utilization: GPU memory fraction to use
-        max_model_len: Maximum model context length (None = model default)
-        num_gpu_blocks_override: Force a specific number of KV cache blocks.
-            Required for models whose KV cache profiler returns 0 (e.g. Gemma-4
-            with heterogeneous head_dim across sliding/global attention layers).
-            Compute as: floor(available_kv_mem_GiB / per_block_mem_GiB).
-        enforce_eager: Disable CUDA graph capture and run in eager mode.
-            Bypasses graph compilation issues on architectures with mixed
-            attention types. Slower but more robust.
-
+        
     Returns:
         vLLM LLM object
     """
@@ -376,41 +815,39 @@ def initialize_vllm(model_path: str, base_model: str = None,
             "vLLM not installed. Install with: pip install vllm\n"
             "Or use --use_api for API-based inference."
         )
-
+    
     print(f"Initializing vLLM with model: {model_path}")
     print(f"GPU memory utilization: {gpu_memory_utilization*100:.0f}%")
-    if max_model_len:
-        print(f"Max model len: {max_model_len}")
-    if num_gpu_blocks_override:
-        print(f"num_gpu_blocks_override: {num_gpu_blocks_override}")
-    if enforce_eager:
-        print("enforce_eager: True (CUDA graphs disabled)")
-
-    if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
-        raise RuntimeError("vLLM requires at least one CUDA GPU but none were detected.")
+    
+    # Derive GPU count from env vars to avoid initializing CUDA in the parent
+    # process before vllm forks its worker processes (causes re-init errors).
+    cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+    if cuda_visible:
+        n_gpus = len([x for x in cuda_visible.split(',') if x.strip()])
+    else:
+        n_gpus = int(os.environ.get('SLURM_GPUS_ON_NODE', '1'))
 
     vllm_kwargs = dict(
         model=model_path,
         gpu_memory_utilization=gpu_memory_utilization,
         dtype="bfloat16",
-        tensor_parallel_size=torch.cuda.device_count(),
+        tensor_parallel_size=n_gpus,
         trust_remote_code=True,
         enforce_eager=enforce_eager,
     )
     if max_model_len:
         vllm_kwargs["max_model_len"] = max_model_len
-    if num_gpu_blocks_override:
-        # Needed for models where vLLM's profiler computes 0 KV blocks due to
-        # heterogeneous attention head dims (e.g. Gemma-4 sliding vs global layers).
-        vllm_kwargs["num_gpu_blocks_override"] = num_gpu_blocks_override
     llm = LLM(**vllm_kwargs)
-
+    
     return llm
 
 
-def generate_responses_vllm(vllm_llm: "LLM", prompts: list, 
+def generate_responses_vllm(vllm_llm: "LLM", prompts: list,
                            max_tokens: int = 1024,
-                           temperature: float = 0.0) -> list:
+                           temperature: float = 0.0,
+                           top_p: float = 1.0,
+                           seed: int = None,
+                           stop: list = None) -> list:
     """Generate responses using vLLM batch inference
     
     Args:
@@ -423,17 +860,12 @@ def generate_responses_vllm(vllm_llm: "LLM", prompts: list,
         List of generated responses
     """
     sampling_params = SamplingParams(
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=1.0,
-        # Prevent immediate-EOS / whitespace-only responses.
-        # Gemma-4 generates EOS or a lone '\n' (stripped to '') for ~14-70% of
-        # prompts depending on task.  min_tokens=1 fixed EOS-only cases (KCV:
-        # 69%→0%) but '\n'-first cases still collapsed to '' after .strip().
-        # min_tokens=50 forces enough tokens that actual content must appear,
-        # while staying well within the max_tokens budget for all tasks.
-        min_tokens=50,
-    )
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            seed=seed,
+            stop=stop or [],
+        )
     
     # Generate responses in batch
     outputs = vllm_llm.generate(prompts, sampling_params)
@@ -443,63 +875,43 @@ def generate_responses_vllm(vllm_llm: "LLM", prompts: list,
     return responses
 
 
-def batch_generate(items, tokenizer, max_new_tokens,
-                   use_api=False, use_vllm=False, vllm_model=None,
-                   model=None, n_api_workers=1, **api_kwargs) -> list:
-    """Generate responses for a list of prompts or message-lists.
+def _vllm_batch_generate(vllm_model, tokenizer, prompt_tuples: list,
+                         max_new_tokens: int, temperature: float = 0.0,
+                         top_p: float = 1.0, seed: int = None,
+                         stop: list = None) -> list:
+    """Format a list of (user_prompt, system_prompt) pairs and batch-generate with vLLM.
 
-    Each element of *items* is either:
-      - a plain string prompt, or
-      - a list of dicts  (OpenAI-style messages).
-
-    When vLLM is active every prompt is formatted with the tokenizer's chat
-    template and submitted as a single batch — this is critical for throughput.
-    API mode supports parallel calls via n_api_workers (ThreadPoolExecutor).
-    Local-HF mode falls back to sequential per-item calls.
+    Sending all prompts in one vLLM call lets the engine use continuous batching,
+    which is ~10-30x faster than calling generate([single_prompt]) in a loop.
+    Returns responses in the same order as prompt_tuples.
     """
-    if use_vllm and vllm_model:
-        formatted = []
-        for item in items:
-            msgs = item if isinstance(item, list) else [{"role": "user", "content": item}]
-            try:
-                fp = tokenizer.apply_chat_template(
-                    msgs, tokenize=False, add_generation_prompt=True
-                )
-            except Exception:
-                fp = item if isinstance(item, str) else msgs[-1].get("content", "")
-            formatted.append(fp)
-        return generate_responses_vllm(vllm_model, formatted, max_new_tokens)
-
-    def _call_one(item):
-        if isinstance(item, list):
-            return generate_response(
-                model, tokenizer, messages=item,
-                max_new_tokens=max_new_tokens,
-                use_api=use_api, use_vllm=False, vllm_model=None,
-                **api_kwargs,
-            )
+    formatted = []
+    for user_prompt, system_prompt in prompt_tuples:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+        if tokenizer is not None:
+            fp = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         else:
-            return generate_response(
-                model, tokenizer, prompt=item,
-                max_new_tokens=max_new_tokens,
-                use_api=use_api, use_vllm=False, vllm_model=None,
-                **api_kwargs,
-            )
+            fp = (system_prompt + "\n" if system_prompt else "") + user_prompt
+        formatted.append(fp)
+    return generate_responses_vllm(vllm_model, formatted, max_new_tokens, temperature, top_p, seed, stop=stop)
 
-    if use_api and n_api_workers > 1:
-        responses = [None] * len(items)
-        with ThreadPoolExecutor(max_workers=n_api_workers) as executor:
-            futures = {executor.submit(_call_one, item): i for i, item in enumerate(items)}
-            for future in tqdm(as_completed(futures), total=len(items), desc="API calls"):
-                i = futures[future]
-                responses[i] = future.result()
-        return responses
 
-    # Sequential fallback for local HF inference (or API with n_api_workers=1)
-    responses = []
-    for item in tqdm(items, desc="Generating") if use_api else items:
-        responses.append(_call_one(item))
-    return responses
+def _vllm_batch_generate_messages(vllm_model, tokenizer, all_messages: list,
+                                   max_new_tokens: int, temperature: float = 0.0,
+                                   top_p: float = 1.0, seed: int = None,
+                                   stop: list = None) -> list:
+    """Batch-generate for vLLM given a list of full messages arrays (supports few-shot, system turns)."""
+    formatted = []
+    for messages in all_messages:
+        if tokenizer is not None:
+            fp = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            fp = "\n".join(m.get("content", "") for m in messages)
+        formatted.append(fp)
+    return generate_responses_vllm(vllm_model, formatted, max_new_tokens, temperature, top_p, seed, stop=stop)
 
 
 def load_jsonl_dataset(source: str) -> Dataset:
@@ -539,41 +951,40 @@ def load_jsonl_dataset(source: str) -> Dataset:
     return Dataset.from_list(data)
 
 
-def collect_huggingface_benchmark(task_name: str, dataset_name: str, subset_name: str,
+def collect_huggingface_benchmark(task_name: str, dataset_name: str, subset_name: str, 
                                   model, tokenizer, output_file: str, max_samples: int = None,
-                                  max_new_tokens: int = 1024, **api_kwargs):
-    """Collect responses from HuggingFace datasets (CTI-Bench, SECURE, SecBench, RedSageMCQ)"""
+                                  **api_kwargs):
+    """Generic HuggingFace dataset collector.
+
+    This is a fallback collector for HF-hosted MCQ-style datasets that do not yet have
+    a benchmark-specific prompt/evaluation implementation in this script.
+
+    Do not use this for tasks where we have implemented a faithful collector, such as
+    MMLU, RedSageMCQ, SECURE, CTI-Bench, or SecBench.
+    """
     print(f"\n{'='*70}")
     print(f"Collecting {task_name.upper()} responses")
     print(f"Dataset: {dataset_name}/{subset_name}")
     print(f"{'='*70}")
-
+    
     # Load dataset
     dataset = load_dataset(dataset_name, subset_name, split="test")
-
+    
     if max_samples:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
-
+    
     print(f"Total samples: {len(dataset)}")
-
-    # SECURE tasks use a different instruction wording (no context in the parenthetical)
-    # SecBench uses RedSage's official wording (no "(A, B, C, D)" parenthetical)
-    # All other MCQ tasks use the standard instruction
-    if task_name == "secbench":
-        default_instruction = "You are given multiple choice questions. Answer with the option letter from the given choices directly."
-    else:
-        default_instruction = "You are given multiple choice questions. Answer with the option letter (A, B, C, D) from the given choices directly."
-
-    # ── Pass 1: build all prompts and metadata ────────────────────────────────
-    prompts_list = []
-    meta_list = []   # (ground_truth, metadata, original_prompt_str) per sample
-
-    for idx, sample in enumerate(dataset):
-        # Normalize field names: Prompt (CTI-Bench/SECURE) > prompt > question
+    
+    # Collect responses
+    results = []
+    total = len(dataset)
+    for idx, sample in enumerate(tqdm(dataset, desc=f"Collecting {task_name.upper()}")):
+        # Normalize field names to standard format
+        # Priority: Prompt (CTI-Bench) > prompt (SECURE) > question (others)
         prompt = sample.get('Prompt') or sample.get('prompt') or sample.get('question')
         if not prompt:
             continue
-
+        
         # Normalize answer field: GT > solution > answer > label
         ground_truth = sample.get('GT') or sample.get('solution')
         if not ground_truth:
@@ -581,6 +992,7 @@ def collect_huggingface_benchmark(task_name: str, dataset_name: str, subset_name
             if answer_val is None:
                 answer_val = sample.get('label')
             if answer_val is not None:
+                # Handle MMLU-CS format: answer is integer index
                 if isinstance(answer_val, int):
                     ground_truth = ['A', 'B', 'C', 'D'][answer_val]
                 else:
@@ -589,153 +1001,261 @@ def collect_huggingface_benchmark(task_name: str, dataset_name: str, subset_name
                 ground_truth = ""
         else:
             ground_truth = str(ground_truth).strip()
-
-        # SECURE: use Prompt field as-is (already fully formatted)
-        if not task_name.startswith("secure_"):
-            choices = sample.get('answers') or sample.get('choices') or sample.get('options')
-            if choices:
-                formatted_prompt = default_instruction + "\n\nQuestion: " + prompt + "\n"
-                if isinstance(choices, dict):
-                    for key in ['A', 'B', 'C', 'D']:
-                        if key in choices:
-                            formatted_prompt += f"{key}. {choices[key]}\n"
-                elif isinstance(choices, list):
-                    choice_letters = ['A', 'B', 'C', 'D']
-                    for ci, option in enumerate(choices[:4]):
-                        formatted_prompt += f"{choice_letters[ci]}. {option}\n"
-                formatted_prompt += "Answer:"
-                prompt = formatted_prompt
-
+        
+        # Format prompt with choices if available (MCQ-style)
+        # Check for choices in this order: answers > choices > options
+        choices = sample.get('answers') or sample.get('choices') or sample.get('options')
+        if choices:
+            # Format as MCQ with 4 options
+            instruction = "You are given multiple choice questions. Answer with the option letter (A, B, C, D) from the given choices directly."
+            formatted_prompt = instruction + "\n\nQuestion: " + prompt + "\n"
+            
+            if isinstance(choices, dict):
+                # Dict format: {"A": "option1", "B": "option2", ...} (CyberMetric, etc.)
+                for key in ['A', 'B', 'C', 'D']:
+                    if key in choices:
+                        formatted_prompt += f"{key}. {choices[key]}\n"
+            elif isinstance(choices, list):
+                # List format: ["option1", "option2", "option3", "option4"] (MMLU-CS, etc.)
+                choice_letters = ['A', 'B', 'C', 'D']
+                for choice_idx, option in enumerate(choices[:4]):  # Take first 4 options
+                    formatted_prompt += f"{choice_letters[choice_idx]}. {option}\n"
+            
+            formatted_prompt += "Answer:"
+            prompt = formatted_prompt
+        
+        # Generate response
+        response = generate_response(model, tokenizer, prompt, max_new_tokens=1024, **api_kwargs)
+        
+        # Prepare metadata with additional info
         metadata = {
             "dataset": dataset_name,
             "subset": subset_name,
             "sample_id": idx,
-            "task_type": get_task_type(task_name),
+            "task_type": get_task_type(task_name)  # Add task type for judge
         }
+        
+        # Add choices if available
         if 'answers' in sample:
             metadata['choices'] = sample['answers']
         elif 'choices' in sample:
             metadata['choices'] = sample['choices']
         elif 'options' in sample:
             metadata['choices'] = sample['options']
-
-        prompts_list.append(prompt)
-        meta_list.append((ground_truth, metadata))
-
-    print(f"Prompts built: {len(prompts_list)}")
-
-    # ── Pass 2: batch generate ────────────────────────────────────────────────
-    responses = batch_generate(
-        prompts_list, tokenizer, max_new_tokens,
-        model=model, **api_kwargs
-    )
-
-    # ── Pass 3: assemble and save results ─────────────────────────────────────
-    results = []
-    for idx, (prompt, (ground_truth, metadata), response) in enumerate(
-        zip(prompts_list, meta_list, responses)
-    ):
-        results.append({
+        
+        # Store raw result
+        result = {
             "task": task_name,
             "index": idx,
             "prompt": prompt,
             "ground_truth": ground_truth,
             "model_response": response,
-            "metadata": metadata,
-        })
-
-    with open(output_file, 'w') as f:
-        for result in results:
-            f.write(json.dumps(result) + '\n')
-
-    print(f"✓ Saved {len(results)} responses to: {output_file}")
-    return len(results)
-
-
-def collect_athenabench_jsonl(task_name: str, jsonl_url: str,
-                             model, tokenizer, output_file: str, max_samples: int = None,
-                             max_new_tokens: int = 1024, **api_kwargs):
-    """Collect responses from AthenaBench GitHub JSONL tasks (CKT, RMS, TAA, ATE, RCM, VSP)"""
-    print(f"\n{'='*70}")
-    print(f"Collecting {task_name.upper()} responses")
-    print(f"JSONL source: {jsonl_url}")
-    print(f"{'='*70}")
-    
-    # Load JSONL dataset
-    dataset = load_jsonl_dataset(jsonl_url)
-    
-    if max_samples:
-        dataset = dataset.select(range(min(max_samples, len(dataset))))
-    
-    print(f"Total samples: {len(dataset)}")
-
-    # ── Pass 1: build prompts and metadata ────────────────────────────────────
-    prompts_list = []
-    meta_list = []
-
-    for idx, sample in enumerate(dataset):
-        question = sample.get('question', '')
-        prompt = sample.get('prompt', question)
-        ground_truth = sample.get('answer', sample.get('correct_answer', '')).strip()
-
-        metadata = {
-            "source": jsonl_url,
-            "sample_id": idx,
-            "task_type": get_task_type(task_name),
+            "metadata": metadata
         }
-        if 'option_a' in sample:
-            metadata['choices'] = {
-                'A': sample.get('option_a', ''),
-                'B': sample.get('option_b', ''),
-                'C': sample.get('option_c', ''),
-                'D': sample.get('option_d', ''),
-                'E': sample.get('option_e', ''),
-            }
+        results.append(result)
+    
+    # Save to JSONL
+    with open(output_file, 'w') as f:
+        for result in results:
+            f.write(json.dumps(result) + '\n')
+    
+    print(f"✓ Saved {len(results)} responses to: {output_file}")
+    return len(results)
 
-        prompts_list.append(prompt)
-        meta_list.append((ground_truth, metadata))
+def collect_mmlu_generation(task_name: str, dataset_name: str, subset_name: str,
+                            model, tokenizer, output_file: str, max_samples: int = None,
+                            **api_kwargs):
+    """
+    Collect raw MMLU responses using the original MMLU 5-shot prompt format.
 
-    print(f"Prompts built: {len(prompts_list)}")
+    Prompt is faithful. Scoring is not official MMLU because official MMLU
+    uses logprobs over answer options, not generated text parsing.
+    """
+    print(f"\n{'='*70}")
+    print(f"Collecting {task_name.upper()} responses with MMLU 5-shot prompt")
+    print(f"Dataset: {dataset_name}/{subset_name}")
+    print(f"{'='*70}")
 
-    # ── Pass 2: batch generate ────────────────────────────────────────────────
-    responses = batch_generate(
-        prompts_list, tokenizer, max_new_tokens,
-        model=model, **api_kwargs
-    )
+    dev_dataset = load_dataset(dataset_name, subset_name, split="dev")
+    test_dataset = load_dataset(dataset_name, subset_name, split="test")
 
-    # ── Pass 3: assemble and save results ─────────────────────────────────────
+    dev_rows = [dict(x) for x in dev_dataset]
+    test_rows = [dict(x) for x in test_dataset]
+
+    if max_samples:
+        test_rows = test_rows[:max_samples]
+
+    print(f"Dev examples: {len(dev_rows)}")
+    print(f"Test samples: {len(test_rows)}")
+
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(test_rows)} prompts")
+        all_prompts = [build_mmlu_full_prompt(dev_rows, s, subset_name, ntrain=5)[0] for s in test_rows]
+        batch_responses = _vllm_batch_generate(
+            vllm_model, tokenizer, [(p, None) for p in all_prompts],
+            max_new_tokens=5, temperature=0.0,
+        )
+    else:
+        batch_responses = None
+
     results = []
-    for idx, (prompt, (ground_truth, metadata), response) in enumerate(
-        zip(prompts_list, meta_list, responses)
-    ):
-        results.append({
+    iter_src = zip(test_rows, batch_responses) if batch_responses is not None else \
+               ((s, None) for s in tqdm(test_rows, desc=f"Collecting {task_name.upper()}"))
+
+    for idx, (sample, pre_response) in enumerate(iter_src):
+        prompt, k = build_mmlu_full_prompt(dev_rows, sample, subset_name, ntrain=5)
+        ground_truth = mmlu_answer_letter(sample["answer"])
+
+        if pre_response is not None:
+            response = pre_response
+        else:
+            response = generate_response(
+                model, tokenizer, prompt, max_new_tokens=5, temperature=0.0, **api_kwargs,
+            )
+
+        result = {
             "task": task_name,
             "index": idx,
             "prompt": prompt,
             "ground_truth": ground_truth,
             "model_response": response,
-            "metadata": metadata,
-        })
+            "metadata": {
+                "dataset": dataset_name,
+                "subset": subset_name,
+                "sample_id": idx,
+                "task_type": "mcq",
+                "prompt_mode": "official_mmlu_5shot_prompt",
+                "official_inference_script": "hendrycks/test/evaluate.py",
+                "ntrain": k,
+                "generation_params": {
+                    "temperature": 0.0,
+                    "max_new_tokens": 5,
+                    "official_max_tokens": 1,
+                    "official_logprobs": 100,
+                    "official_echo": True,
+                },
+                "official_scoring_note": (
+                    "Official MMLU scoring selects the highest-logprob answer among "
+                    "' A', ' B', ' C', and ' D'. This mode preserves the prompt but "
+                    "collects generated text for later parsing."
+                ),
+                "question": sample.get("question", ""),
+                "choices": sample.get("choices", []),
+                "original_fields": sample,
+            },
+        }
+        results.append(result)
 
-    with open(output_file, 'w') as f:
+    with open(output_file, "w", encoding="utf-8") as f:
         for result in results:
-            f.write(json.dumps(result) + '\n')
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
 
-    print(f"✓ Saved {len(results)} responses to: {output_file}")
+    print(f"✓ Saved {len(results)} MMLU generation responses to: {output_file}")
     return len(results)
+
+
+def collect_mmlu_logprobs(task_name: str, dataset_name: str, subset_name: str,
+                          model, tokenizer, output_file: str, max_samples: int = None,
+                          **api_kwargs):
+    """
+    Collect MMLU predictions using official-style logprob scoring.
+
+    Supports two backends:
+      - vLLM:     score_mmlu_next_token_vllm() — SamplingParams(logprobs=100, max_tokens=1)
+      - Local HF: score_mmlu_next_token_local() — reads logits[0, -1, :] directly
+
+    Both pass the raw 5-shot prompt without a chat template, matching the original
+    Hendrycks et al. Completion API behaviour. API mode is not supported.
+    """
+    print(f"\n{'='*70}")
+    print(f"Collecting {task_name.upper()} with official-style MMLU logprob scoring")
+    print(f"Dataset: {dataset_name}/{subset_name}")
+    print(f"{'='*70}")
+
+    if api_kwargs.get("use_api"):
+        raise ValueError(
+            "mmlu_logprobs does not support API mode. "
+            "Use --use_vllm or local HF inference instead."
+        )
+
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+    backend = "vllm" if (use_vllm and vllm_model) else "local_hf"
+    print(f"Backend: {backend}")
+
+    dev_dataset = load_dataset(dataset_name, subset_name, split="dev")
+    test_dataset = load_dataset(dataset_name, subset_name, split="test")
+
+    dev_rows = [dict(x) for x in dev_dataset]
+    test_rows = [dict(x) for x in test_dataset]
+
+    if max_samples:
+        test_rows = test_rows[:max_samples]
+
+    print(f"Dev examples: {len(dev_rows)}")
+    print(f"Test samples: {len(test_rows)}")
+
+    results = []
+
+    for idx, sample in enumerate(tqdm(test_rows, desc=f"Collecting {task_name.upper()}")):
+        prompt, k = build_mmlu_full_prompt(dev_rows, sample, subset_name, ntrain=5)
+        ground_truth = mmlu_answer_letter(sample["answer"])
+
+        if backend == "vllm":
+            score_info = score_mmlu_next_token_vllm(vllm_model, tokenizer, prompt)
+        else:
+            score_info = score_mmlu_next_token_local(model, tokenizer, prompt)
+        prediction = score_info["prediction"]
+
+        result = {
+            "task": task_name,
+            "index": idx,
+            "prompt": prompt,
+            "ground_truth": ground_truth,
+            "model_response": prediction,
+            "metadata": {
+                "dataset": dataset_name,
+                "subset": subset_name,
+                "sample_id": idx,
+                "task_type": "mcq",
+                "prompt_mode": "official_mmlu_5shot_prompt",
+                "official_inference_script": "hendrycks/test/evaluate.py",
+                "ntrain": k,
+                "backend": backend,
+                "generation_params": {
+                    "max_tokens": 1,
+                    "logprobs": 100,
+                    "temperature": 0,
+                    "echo": True,
+                },
+                "official_scoring": "argmax logprob among ' A', ' B', ' C', and ' D'",
+                "prediction": prediction,
+                "correct": prediction == ground_truth,
+                "choice_logprobs": score_info["logprobs"],
+                "choice_probs": score_info["probs"],
+                "choice_token_info": score_info["token_info"],
+                "question": sample.get("question", ""),
+                "choices": sample.get("choices", []),
+                "original_fields": sample,
+            },
+        }
+        results.append(result)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+    print(f"✓ Saved {len(results)} MMLU logprob predictions to: {output_file}")
+    return len(results)
+
 
 
 def collect_ctibench_tsv(task_name: str, tsv_url: str,
-                         model, tokenizer, output_file: str, max_samples: int = None,
-                         max_new_tokens: int = 1024, **api_kwargs):
-    """Collect responses from CTI-Bench TSV tasks (e.g. cti_taa).
-
-    The maveryn/cti-bench repo serves the original benchmark as TSV files.
-    Some subsets (taa) are not mirrored on the RISys-Lab HF dataset, so we
-    pull them directly. Each TSV has columns including `Prompt` and `GT`.
-    The Prompt column is already fully formatted by the benchmark authors —
-    we use it as-is (no choice-letter scaffolding).
-    """
+                         model, tokenizer, output_file: str,
+                         max_samples: int = None, **api_kwargs):
     print(f"\n{'='*70}")
     print(f"Collecting {task_name.upper()} responses")
     print(f"TSV source: {tsv_url}")
@@ -748,306 +1268,391 @@ def collect_ctibench_tsv(task_name: str, tsv_url: str,
 
     print(f"Total samples: {len(dataset)}")
 
-    if len(dataset) == 0:
-        print(f"WARNING: empty dataset for {task_name}")
-        with open(output_file, "w") as f:
-            pass
-        return 0
+    SYS_PROMPT = "You are a cybersecurity expert specializing in cyberthreat intelligence."
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
 
-    cols = dataset.column_names
-    if "Prompt" not in cols:
-        raise ValueError(
-            f"CTI-Bench TSV missing 'Prompt' column for {task_name}: cols={cols}"
+    samples = [dict(s) for s in dataset if s.get("Prompt")]
+    results = []
+
+    if use_vllm and vllm_model:
+        # Batch path: send all prompts to vLLM in one call for ~10-30x speedup.
+        print(f"  [vLLM batch mode] {len(samples)} prompts")
+        responses = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(s["Prompt"], SYS_PROMPT) for s in samples],
+            max_new_tokens=2048, temperature=0.0, top_p=1.0, seed=42,
         )
-    # Some CTI-Bench subsets (notably cti-taa) ship without a GT column —
-    # the answer key lives separately in the evaluation notebook. We collect
-    # responses anyway and note the missing GT in metadata.
-    gt_col = "GT" if "GT" in cols else ("Solution" if "Solution" in cols else None)
+    else:
+        responses = []
+        for sample in tqdm(samples, desc=f"Collecting {task_name.upper()}"):
+            responses.append(generate_response(
+                model, tokenizer, sample["Prompt"],
+                max_new_tokens=2048,
+                system_prompt=SYS_PROMPT,
+                temperature=0.0, top_p=1.0, seed=42,
+                **api_kwargs,
+            ))
 
-    # ── Pass 1: build prompts and metadata ────────────────────────────────────
-    prompts_list = []
-    meta_list = []
-
-    for idx, sample in enumerate(dataset):
-        prompt = sample.get("Prompt", "").strip()
-        ground_truth = str(sample.get(gt_col, "")).strip() if gt_col else ""
-        if not prompt:
-            continue
-
+    for idx, (sample, response) in enumerate(zip(samples, responses)):
+        ground_truth = str(sample.get("GT", "") or "").strip()
         metadata = {
             "dataset": "maveryn/cti-bench",
             "source": tsv_url,
             "sample_id": idx,
             "task_type": get_task_type(task_name),
             "prompt_mode": "original_prompt_column",
+            "system_prompt": SYS_PROMPT,
+            "generation_params": {
+                "temperature": 0,
+                "top_p": 1,
+                "seed": 42,
+                "max_tokens": 2048,
+            },
+            "collector_scope": "raw_response_collection_only",
+            "original_inference_script": "evaluation/model-prediction.ipynb",
+            "original_fields": sample,
         }
-        if gt_col is None:
+        if task_name == "ctibench_taa":
+            metadata["requires_original_eval_assets"] = True
             metadata["ground_truth_note"] = (
-                "TSV does not publish ground-truth answers — the upstream "
-                "CTI-Bench evaluation notebook holds the answer key. "
-                "ground_truth is intentionally empty."
+                "Original CTI-Bench TAA evaluation uses alias/related dictionaries; "
+                "the TSV is not a simple MCQ/GT-only task."
             )
-        # Preserve other TSV columns for traceability
-        skip_cols = {"Prompt"} | ({gt_col} if gt_col else set())
-        original_fields = {k: sample.get(k, "") for k in cols if k not in skip_cols}
-        if original_fields:
-            metadata["original_fields"] = original_fields
-
-        prompts_list.append(prompt)
-        meta_list.append((ground_truth, metadata))
-
-    print(f"Prompts built: {len(prompts_list)}")
-
-    # ── Pass 2: batch generate ────────────────────────────────────────────────
-    responses = batch_generate(
-        prompts_list, tokenizer, max_new_tokens,
-        model=model, **api_kwargs
-    )
-
-    # ── Pass 3: assemble and save ─────────────────────────────────────────────
-    results = []
-    for idx, (prompt, (ground_truth, metadata), response) in enumerate(
-        zip(prompts_list, meta_list, responses)
-    ):
         results.append({
+            "task": task_name,
+            "index": idx,
+            "prompt": sample["Prompt"],
+            "ground_truth": ground_truth,
+            "model_response": response,
+            "metadata": metadata,
+        })
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+    print(f"✓ Saved {len(results)} responses to: {output_file}")
+    return len(results)
+
+
+def athena_eval_task_name(task_name: str) -> str:
+    """Map our canonical Athena task names to AthenaBench evaluator task names."""
+    mapping = {
+        "athenabench_ckt": "CKT",
+        "athenabench_ate": "ATE",
+        "athenabench_rcm": "RCM",
+        "athenabench_rms": "RMS",
+        "athenabench_vsp": "VSP",
+        "athenabench_taa": "TAA",
+        # backward-safe
+        "ckt": "CKT",
+        "rms": "RMS",
+        "taa": "TAA",
+    }
+    return mapping.get(task_name, task_name.upper())
+
+
+def collect_athenabench_jsonl(task_name: str, jsonl_url: str, 
+                             model, tokenizer, output_file: str, max_samples: int = None,
+                             **api_kwargs):
+    """Collect responses from AthenaBench GitHub JSONL tasks.
+
+    Faithful to AthenaBench run.py:
+    - use original row["prompt"] as model input
+    - use original row["answer"] as ground truth
+    - do not reconstruct options
+    - no system prompt
+    - max_new_tokens=2048
+    - keep Athena-compatible response/answer fields in metadata
+    """
+    print(f"\n{'='*70}")
+    print(f"Collecting {task_name.upper()} responses")
+    print(f"JSONL source: {jsonl_url}")
+    print(f"{'='*70}")
+    
+    dataset = load_jsonl_dataset(jsonl_url)
+
+    if len(dataset) > 0 and "prompt" not in dataset.column_names:
+        raise ValueError(
+            f"AthenaBench JSONL does not contain a prompt field: {jsonl_url}. "
+            f"Available columns: {dataset.column_names}"
+        )
+
+    if len(dataset) > 0 and "answer" not in dataset.column_names:
+        raise ValueError(
+            f"AthenaBench JSONL does not contain an answer field: {jsonl_url}. "
+            f"Available columns: {dataset.column_names}"
+        )
+    
+    if max_samples:
+        dataset = dataset.select(range(min(max_samples, len(dataset))))
+    
+    print(f"Total samples: {len(dataset)}")
+    
+    results = []
+    athena_task = athena_eval_task_name(task_name)
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+
+    samples_list = [dict(s) for s in dataset if s.get("prompt", "")]
+
+    if use_vllm and vllm_model:
+        # Batch path — no system prompt, faithful to models.py.
+        print(f"  [vLLM batch mode] {len(samples_list)} prompts")
+        batch_responses = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(s["prompt"], None) for s in samples_list],
+            max_new_tokens=2048, temperature=0.0,
+        )
+    else:
+        batch_responses = None
+
+    iter_source = zip(samples_list, batch_responses) if batch_responses is not None else \
+                  ((s, None) for s in tqdm(samples_list, desc=f"Collecting {task_name.upper()}"))
+
+    for idx, (sample, pre_response) in enumerate(iter_source):
+        prompt = sample.get("prompt", "")
+        ground_truth = str(sample.get("answer", "") or "").strip()
+
+        if pre_response is not None:
+            response = pre_response
+        else:
+            # Faithful to models.py: no system prompt; single user prompt.
+            response = generate_response(
+                model,
+                tokenizer,
+                prompt,
+                max_new_tokens=2048,
+                temperature=0.0,
+                **api_kwargs,
+            )
+        
+        metadata = {
+            "source": jsonl_url,
+            "sample_id": idx,
+            "task_type": get_task_type(task_name),
+            "dataset": "Athena-Software-Group/athenabench",
+            "prompt_mode": "original_prompt_field",
+            "answer_field": "answer",
+            "generation_params": {
+                "temperature": 0.0,
+                "max_new_tokens": 2048,
+                "system_prompt": None,
+            },
+            "original_inference_script": "athena_eval/run.py",
+            "original_model_wrapper": "athena_eval/models.py",
+            "athena_eval_task": athena_task,
+
+            # AthenaBench run.py output compatibility:
+            # run.py stores: id, prompt, response, prediction, answer.
+            # We keep prediction absent here because extraction belongs to eval.
+            "athena_output_compatible": {
+                "id": idx,
+                "prompt": prompt,
+                "response": response,   # populated above
+                "answer": ground_truth,
+            },
+        }
+
+        # Keep options in metadata only. Do not inject them into the prompt.
+        choices = {}
+        for letter, key in {
+            "A": "option_a",
+            "B": "option_b",
+            "C": "option_c",
+            "D": "option_d",
+            "E": "option_e",
+        }.items():
+            if key in sample and sample.get(key):
+                choices[letter] = sample.get(key)
+
+        if choices:
+            metadata["choices"] = choices
+            metadata["choices_note"] = (
+                "Stored for inspection only. AthenaBench inference uses original prompt field directly."
+            )
+
+        # Preserve useful original fields without changing top-level format.
+        for key in [
+            "id",
+            "url_id",
+            "url",
+            "source_type",
+            "processed_path",
+            "raw_path",
+            "char_count",
+            "question_count_planned",
+            "question",
+            "correct_answer",
+            "updated_answer",
+            "explanation",
+            "prompt_hash",
+            "vector_score",
+        ]:
+            if key in sample:
+                metadata[key] = sample[key]
+
+        if task_name == "athenabench_taa":
+            metadata["requires_original_eval_assets"] = True
+            metadata["eval_assets"] = [
+                "athena_eval/taa/aliases.csv",
+                "athena_eval/taa/related_groups.csv",
+            ]
+            metadata["eval_note"] = (
+                "AthenaBench TAA scoring uses alias and related-group dictionaries "
+                "to compute correct, plausible, and combined accuracy."
+            )
+
+        if task_name == "athenabench_vsp":
+            metadata["eval_note"] = (
+                "AthenaBench VSP evaluation parses predicted and gold CVSS v3 vectors "
+                "with CVSS3, computes MAD, then derives accuracy using the configured denominator."
+            )
+
+        # Keep the full original row for faithful downstream evaluation/debugging.
+        metadata["original_fields"] = sample
+        
+        result = {
             "task": task_name,
             "index": idx,
             "prompt": prompt,
             "ground_truth": ground_truth,
             "model_response": response,
-            "metadata": metadata,
-        })
-
-    with open(output_file, "w") as f:
+            "metadata": metadata
+        }
+        results.append(result)
+    
+    with open(output_file, "w", encoding="utf-8") as f:
         for result in results:
-            f.write(json.dumps(result) + "\n")
-
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+    
     print(f"✓ Saved {len(results)} responses to: {output_file}")
     return len(results)
 
 
-def collect_sevenllm(model, tokenizer, output_file: str, max_samples: int = None,
-                     max_new_tokens: int = 2000, **api_kwargs):
-    """Collect responses from SEvenLLM-Bench (English samples only).
-
-    SEvenLLM-Bench is a 23-category structured CTI extraction benchmark with
-    1300 bilingual samples (650 EN + 650 ZH). We filter to non-Chinese inputs
-    so the judge can use a single English prompt.
-
-    Dataset: Multilingual-Multimodal-NLP/SEVENLLM-Dataset (HuggingFace)
-    Default max_new_tokens=2000 reflects the open-ended JSON outputs; override
-    via the calibration JSON for tighter budgets if needed.
-    """
-    from huggingface_hub import hf_hub_download
-
+def collect_secure_tsv(task_name: str, tsv_url: str,
+                       model, tokenizer, output_file: str,
+                       max_samples: int = None, **api_kwargs):
     print(f"\n{'='*70}")
-    print("Collecting SEVENLLM responses (English-only filter)")
-    print("Dataset: Multilingual-Multimodal-NLP/SEVENLLM-Dataset")
+    print(f"Collecting {task_name.upper()} responses")
+    print(f"TSV source: {tsv_url}")
     print(f"{'='*70}")
 
-    # The HF auto-loader fails on this dataset (mixed output types across rows),
-    # so we download test.jsonl directly and parse it.
-    file_path = hf_hub_download(
-        repo_id="Multilingual-Multimodal-NLP/SEVENLLM-Dataset",
-        filename="test.jsonl",
-        repo_type="dataset",
-    )
+    dataset = load_tsv_dataset(tsv_url)
 
-    samples = []
-    with open(file_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                samples.append(json.loads(line))
-    print(f"Total samples in dataset: {len(samples)}")
+    if len(dataset) > 0 and "Prompt" not in dataset.column_names:
+        raise ValueError(
+            f"SECURE TSV does not contain a Prompt column: {tsv_url}. "
+            f"Available columns: {dataset.column_names}"
+        )
 
-    english_samples = [s for s in samples if is_non_chinese_sample(s.get("input", ""))]
-    print(f"Non-Chinese samples: {len(english_samples)}")
+    if len(dataset) > 0 and "Correct Answer" not in dataset.column_names:
+        raise ValueError(
+            f"SECURE TSV does not contain a Correct Answer column: {tsv_url}. "
+            f"Available columns: {dataset.column_names}"
+        )
 
     if max_samples:
-        english_samples = english_samples[:max_samples]
-    print(f"Samples to process: {len(english_samples)}")
+        dataset = dataset.select(range(min(max_samples, len(dataset))))
 
-    # SEvenLLM was fine-tuned on a Stanford-Alpaca-style template; pick the
-    # Qwen-flavored variant when the tokenizer is Qwen-based.
-    tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
-    template_key = "prompt_input_qwen" if "qwen" in tokenizer_name else "prompt_input"
-    template = SEVENLLM_PROMPT_DICT[template_key]
+    print(f"Total samples: {len(dataset)}")
 
-    # ── Pass 1: build prompts ────────────────────────────────────────────────
-    prompts_list = []
-    meta_list = []  # (ground_truth, metadata) per sample
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+    samples_list = [dict(s) for s in dataset if s.get("Prompt")]
+    results = []
 
-    for idx, sample in enumerate(english_samples):
-        instruction = sample.get("instruction", "")
-        input_text = sample.get("input", "")
-        gt = sample.get("output", "")
-        if isinstance(gt, (dict, list)):
-            ground_truth = json.dumps(gt, ensure_ascii=False)
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(samples_list)} prompts")
+        responses = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(s["Prompt"], None) for s in samples_list],
+            max_new_tokens=1024, temperature=0.7,
+        )
+    else:
+        responses = None
+
+    iter_src = zip(samples_list, responses) if responses is not None else \
+               ((s, None) for s in tqdm(samples_list, desc=f"Collecting {task_name.upper()}"))
+
+    for idx, (sample, pre_response) in enumerate(iter_src):
+        prompt = sample.get("Prompt", "")
+        ground_truth = str(sample.get("Correct Answer", "") or "").strip()
+
+        if pre_response is not None:
+            response = pre_response
         else:
-            ground_truth = str(gt)
-        category = sample.get("category", "unknown")
-
-        prompt = template.format(instruction=instruction, input=input_text)
+            response = generate_response(
+                model, tokenizer, prompt,
+                max_new_tokens=1024, temperature=0.7,
+                **api_kwargs,
+            )
 
         metadata = {
-            "dataset": "Multilingual-Multimodal-NLP/SEVENLLM-Dataset",
-            "category": category,
-            "instruction": instruction,
-            "input": input_text,            # judge needs this for context
-            "task_type": get_task_type("sevenllm"),
-            "prompt_template": template_key,
+            "dataset": "aiforsec/SECURE",
+            "source": tsv_url,
+            "sample_id": idx,
+            "task_type": get_task_type(task_name),
+            "prompt_mode": "original_prompt_column",
+            "answer_field": "Correct Answer",
+            "generation_params": {
+                "temperature": 0.7,
+                "max_new_tokens": 1024,
+            },
+            "collector_scope": "raw_response_collection_only",
+            "original_fields": sample,
         }
 
-        prompts_list.append(prompt)
-        meta_list.append((ground_truth, metadata))
+        # Preserve common SECURE fields explicitly for easier inspection.
+        for key in [
+            "URL",
+            "Question",
+            "Option A",
+            "Option B",
+            "Option C",
+            "Option D",
+            "Level",
+            "Explanation",
+            "CVSS v3 Vector String",
+            "Overview",
+            "Vulnerability",
+            "Risk Evaluation",
+        ]:
+            if key in sample:
+                metadata[key] = sample[key]
 
-    print(f"Prompts built: {len(prompts_list)}")
+        # For MAET/CWET, the paper describes A/B/C/D/X-style prompts.
+        # For KCV, the prompt is T/F/X. Do not infer type from code;
+        # preserve the prompt and mark the task family.
+        if task_name in {"secure_maet", "secure_cwet"}:
+            metadata["official_metric"] = "accuracy"
+            metadata["answer_format_note"] = "Prompt asks for A, B, C, D, or X depending on the row."
+        elif task_name == "secure_kcv":
+            metadata["official_metric"] = "accuracy"
+            metadata["answer_format_note"] = "Prompt asks for T, F, or X."
 
-    # ── Pass 2: batch generate ───────────────────────────────────────────────
-    responses = batch_generate(
-        prompts_list, tokenizer, max_new_tokens,
-        model=model, **api_kwargs
-    )
-
-    # ── Pass 3: assemble and save ────────────────────────────────────────────
-    results = []
-    for idx, (prompt, (ground_truth, metadata), response) in enumerate(
-        zip(prompts_list, meta_list, responses)
-    ):
-        results.append({
-            "task": "sevenllm",
+        result = {
+            "task": task_name,
             "index": idx,
             "prompt": prompt,
             "ground_truth": ground_truth,
             "model_response": response,
-            "metadata": metadata,
-        })
+            "metadata": metadata
+        }
+        results.append(result)
 
-    with open(output_file, "w") as f:
-        for r in results:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-
-    # Per-category sanity print (helpful for debugging coverage)
-    cat_counts = {}
-    for r in results:
-        c = r["metadata"]["category"]
-        cat_counts[c] = cat_counts.get(c, 0) + 1
-    print(f"\nCategory distribution ({len(cat_counts)} categories):")
-    for cat, n in sorted(cat_counts.items(), key=lambda x: -x[1])[:10]:
-        print(f"  {cat}: {n}")
-    if len(cat_counts) > 10:
-        print(f"  ... and {len(cat_counts) - 10} more")
-
-    print(f"✓ Saved {len(results)} responses to: {output_file}")
-    return len(results)
-
-
-def collect_mmlu_cs(model, tokenizer, output_file: str, max_samples: int = None,
-                   max_new_tokens: int = 1024, **api_kwargs):
-    """Collect responses from MMLU Computer Security using the official 5-shot format.
-
-    Official format from Hendrycks et al. (hendrycks/test):
-    - Header: "The following are multiple choice questions (with answers) about computer security."
-    - 5 in-context examples from the dev split (each with "Answer: X")
-    - Test question appended without the answer
-    """
-    print(f"\n{'='*70}")
-    print("Collecting MMLU-CS responses (official 5-shot format)")
-    print(f"{'='*70}")
-
-    # Load dev split for few-shot examples and test split for evaluation
-    dev_dataset = load_dataset("lighteval/mmlu", "computer_security", split="dev")
-    test_dataset = load_dataset("lighteval/mmlu", "computer_security", split="test")
-
-    if max_samples:
-        test_dataset = test_dataset.select(range(min(max_samples, len(test_dataset))))
-
-    print(f"Dev examples (few-shot): {len(dev_dataset)}")
-    print(f"Test samples: {len(test_dataset)}")
-
-    choice_letters = ['A', 'B', 'C', 'D']
-    subject = "computer security"
-    header = f"The following are multiple choice questions (with answers) about {subject}.\n\n"
-
-    def format_example(sample, include_answer: bool) -> str:
-        """Format a single MCQ example in MMLU style."""
-        choices = sample.get('choices', [])
-        answer_idx = sample.get('answer')
-        question = sample.get('question', '')
-
-        text = question.strip() + "\n"
-        for i, opt in enumerate(choices[:4]):
-            text += f"{choice_letters[i]}. {opt}\n"
-        text += "Answer:"
-        if include_answer and answer_idx is not None:
-            label = choice_letters[answer_idx] if isinstance(answer_idx, int) else str(answer_idx)
-            text += f" {label}"
-        return text
-
-    # Build 5-shot prefix (all dev examples, typically 5 for MMLU)
-    few_shot_parts = [header]
-    for dev_sample in dev_dataset:
-        few_shot_parts.append(format_example(dev_sample, include_answer=True))
-        few_shot_parts.append("\n\n")
-    few_shot_prefix = "".join(few_shot_parts)
-
-    # ── Pass 1: build prompts ─────────────────────────────────────────────────
-    prompts_list = []
-    meta_list = []
-
-    for idx, sample in enumerate(test_dataset):
-        choices = sample.get('choices', [])
-        answer_idx = sample.get('answer')
-        if not choices or answer_idx is None:
-            continue
-
-        ground_truth = choice_letters[answer_idx] if isinstance(answer_idx, int) else str(answer_idx).strip()
-        test_part = format_example(sample, include_answer=False)
-        prompt = few_shot_prefix + test_part
-
-        prompts_list.append(prompt)
-        meta_list.append((ground_truth, choices))
-
-    print(f"Prompts built: {len(prompts_list)}")
-
-    # ── Pass 2: batch generate ────────────────────────────────────────────────
-    responses = batch_generate(
-        prompts_list, tokenizer, max_new_tokens,
-        model=model, **api_kwargs
-    )
-
-    # ── Pass 3: assemble and save results ─────────────────────────────────────
-    results = []
-    for idx, (prompt, (ground_truth, choices), response) in enumerate(
-        zip(prompts_list, meta_list, responses)
-    ):
-        results.append({
-            "task": "mmlu-cs",
-            "index": idx,
-            "prompt": prompt,
-            "ground_truth": ground_truth,
-            "model_response": response,
-            "metadata": {
-                "dataset": "lighteval/mmlu",
-                "subset": "computer_security",
-                "sample_id": idx,
-                "task_type": "mcq",
-                "choices": choices,
-                "prompt_style": "5shot_official",
-            },
-        })
-
-    with open(output_file, 'w', encoding='utf-8') as f:
+    with open(output_file, "w", encoding="utf-8") as f:
         for result in results:
-            f.write(json.dumps(result, ensure_ascii=False) + '\n')
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
 
     print(f"✓ Saved {len(results)} responses to: {output_file}")
     return len(results)
 
 
 def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
-                   max_new_tokens: int = 1024, **api_kwargs):
-    """Collect responses from SecEval using chat-few-shot prompting"""
+                   **api_kwargs):
+    """Collect responses from SecEval using official chat few-shot prompting."""
     print(f"\n{'='*70}")
     print(f"Collecting SecEval responses")
     print(f"{'='*70}")
@@ -1075,56 +1680,72 @@ def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
         },
     ]
 
-    # ── Pass 1: build message-lists and metadata ──────────────────────────────
-    messages_list = []
-    meta_list = []
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
 
-    for idx, q in enumerate(questions):
+    valid_qs = [q for q in questions if q.get("question") and q.get("choices")]
+
+    def _build_seceval_messages(q):
+        qt = ("Question: " + q["question"] + " ".join(q["choices"])).replace("\n", " ")
+        return ([{"role": "system", "content": instruction}] + chat_few_shot
+                + [{"role": "user", "content": qt}])
+
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(valid_qs)} prompts")
+        batch_responses = _vllm_batch_generate_messages(
+            vllm_model, tokenizer, [_build_seceval_messages(q) for q in valid_qs],
+            max_new_tokens=5, temperature=0.0,
+        )
+    else:
+        batch_responses = None
+
+    results = []
+    iter_src = zip(valid_qs, batch_responses) if batch_responses is not None else \
+               ((q, None) for q in tqdm(valid_qs, desc="Collecting SecEval"))
+
+    for idx, (q, pre_response) in enumerate(iter_src):
         question = q.get("question", "")
         choices = q.get("choices", [])
-        if not question or not choices:
-            continue
+        question_text = ("Question: " + question + " ".join(choices)).replace("\n", " ")
+        messages = _build_seceval_messages(q)
 
-        question_text = "Question: " + question + " " + " ".join(choices)
-        question_text = question_text.replace("\n", " ")
+        if pre_response is not None:
+            response = pre_response
+        else:
+            response = generate_response(
+                model, tokenizer, messages=messages, max_new_tokens=5, **api_kwargs,
+            )
 
-        messages = (
-            [{"role": "system", "content": instruction}]
-            + chat_few_shot
-            + [{"role": "user", "content": question_text}]
-        )
-        messages_list.append(messages)
-        meta_list.append({
-            "question": question,
-            "choices": choices,
-            "id": q.get("id", ""),
-            "task_type": "seceval",
-            "source": q.get("source", ""),
-            "topics": q.get("topics", []),
-            "keyword": q.get("keyword", ""),
-            "prompt_style": "chat_fewshot",
-            "ground_truth": q.get("answer", ""),
-        })
-
-    print(f"Prompts built: {len(messages_list)}")
-
-    # ── Pass 2: batch generate ────────────────────────────────────────────────
-    responses = batch_generate(
-        messages_list, tokenizer, max_new_tokens,
-        model=model, **api_kwargs
-    )
-
-    # ── Pass 3: assemble and save results ─────────────────────────────────────
-    results = []
-    for idx, (messages, meta, response) in enumerate(zip(messages_list, meta_list, responses)):
-        results.append({
+        result = {
             "task": "seceval",
             "index": idx,
             "prompt": messages,
-            "ground_truth": meta.pop("ground_truth"),
+            "ground_truth": q.get("answer", ""),
             "model_response": response,
-            "metadata": meta,
-        })
+            "metadata": {
+                "dataset": "XuanwuAI/SecEval",
+                "source_url": dataset_url,
+                "sample_id": idx,
+                "question": question,
+                "choices": choices,
+                "id": q.get("id", ""),
+                "task_type": "seceval",
+                "source": q.get("source", ""),
+                "topics": q.get("topics", []),
+                "keyword": q.get("keyword", ""),
+                "prompt_style": "official_chat_fewshot",
+                "official_inference_script": "eval/eval.py",
+                "generation_params": {
+                    "max_new_tokens": 5,
+                },
+                "official_answer_extraction": (
+                    "If 'Answer:' is present, remove it; then extract A-D letters, "
+                    "deduplicate, sort, and join before comparing to answer."
+                ),
+                "original_fields": q,
+            },
+        }
+        results.append(result)
 
     with open(output_file, "w", encoding="utf-8") as f:
         for result in results:
@@ -1135,89 +1756,103 @@ def collect_seceval(model, tokenizer, output_file: str, max_samples: int = None,
 
 
 def collect_cybermetric(model, tokenizer, output_file: str, max_samples: int = None,
-                        max_new_tokens: int = 1024, **api_kwargs):
-    """Collect responses from CyberMetric"""
+                        dataset_url: str = None, paper_mode: bool = False, **api_kwargs):
+    """Collect responses from CyberMetric using the original evaluator prompt.
+
+    paper_mode=False (default): temperature=0.0, deterministic — for cross-model comparison.
+    paper_mode=True:            temperature=1.0, top_p=0.9 — matches paper settings.
+    """
+    mode_label = "paper-mode (temp=1.0, top_p=0.9)" if paper_mode else "det-mode (temp=0.0)"
     print(f"\n{'='*70}")
-    print("Collecting CyberMetric responses")
+    print(f"Collecting CyberMetric responses [{mode_label}]")
     print(f"{'='*70}")
 
-    dataset = load_dataset(
-        "RISys-Lab/Benchmarks_CyberSec_CyberMetrics",
-        "cyberMetric_500",
-        split="test"
-    )
+    if dataset_url is None:
+        dataset_url = "https://raw.githubusercontent.com/cybermetric/CyberMetric/main/CyberMetric-500-v1.json"
+
+    json_data = load_json_dataset(dataset_url)
+    questions_data = json_data["questions"]
 
     if max_samples:
-        dataset = dataset.select(range(min(max_samples, len(dataset))))
+        questions_data = questions_data[:max_samples]
 
-    print(f"Total samples: {len(dataset)}")
+    print(f"Total samples: {len(questions_data)}")
 
     system_prompt = "You are a security expert who answers questions."
+    temperature = 1.0 if paper_mode else 0.0
+    top_p = 0.9 if paper_mode else 1.0
+    task_key = "cybermetric_paper" if paper_mode else "cybermetric"
 
-    # ── Pass 1: build prompts ─────────────────────────────────────────────────
-    prompts_list = []
-    meta_list = []
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
 
-    for idx, sample in enumerate(dataset):
-        question = sample.get("question", "")
-        answers = sample.get("answers", {}) or {}
-        ground_truth = str(sample.get("solution", "")).strip()
-
-        if not question:
-            continue
-
-        if not answers:
-            answers = sample.get("choices", {}) or sample.get("options", {}) or {}
-
-        if isinstance(answers, list):
-            letters = ["A", "B", "C", "D"]
-            answers = {letters[i]: str(opt) for i, opt in enumerate(answers[:4])}
-
-        if not isinstance(answers, dict) or len(answers) == 0:
-            continue
-
-        options = ", ".join([f"{key}) {value}" for key, value in answers.items()])
-        # Embed system prompt in user message for cybermetric (system_prompt handled in chat template)
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": (
-                f"Question: {question}\n"
-                f"Options: {options}\n\n"
+    def _build_cybermetric_prompt(s):
+        options = ", ".join([f"{k}) {v}" for k, v in s["answers"].items()])
+        return (f"Question: {s['question']}\nOptions: {options}\n\n"
                 f"Choose the correct answer (A, B, C, or D) only. "
-                f"Always return in this format: 'ANSWER: X'"
-            )},
-        ]
-        prompts_list.append(messages)
-        meta_list.append((ground_truth, question, answers, idx))
+                f"Always return in this format: 'ANSWER: X' ")
 
-    print(f"Prompts built: {len(prompts_list)}")
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(questions_data)} prompts")
+        batch_responses = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(_build_cybermetric_prompt(s), system_prompt) for s in questions_data],
+            max_new_tokens=1024, temperature=temperature, top_p=top_p,
+        )
+    else:
+        batch_responses = None
 
-    # ── Pass 2: batch generate ────────────────────────────────────────────────
-    responses = batch_generate(
-        prompts_list, tokenizer, max_new_tokens,
-        model=model, **api_kwargs
-    )
-
-    # ── Pass 3: assemble and save results ─────────────────────────────────────
     results = []
-    for messages, (ground_truth, question, answers, sample_idx), response in zip(
-        prompts_list, meta_list, responses
-    ):
-        results.append({
-            "task": "cybermetric",
-            "index": sample_idx,
-            "prompt": messages[-1]["content"],
+    iter_src = zip(questions_data, batch_responses) if batch_responses is not None else \
+               ((s, None) for s in tqdm(questions_data, desc="Collecting CYBERMETRIC"))
+
+    for idx, (sample, pre_response) in enumerate(iter_src):
+        question = sample["question"]
+        answers = sample["answers"]
+        ground_truth = str(sample["solution"]).strip()
+        prompt = _build_cybermetric_prompt(sample)
+
+        if pre_response is not None:
+            response = pre_response
+        else:
+            gen_kwargs = dict(api_kwargs)
+            if paper_mode:
+                gen_kwargs["top_p"] = top_p
+            response = generate_response(
+                model, tokenizer, prompt,
+                system_prompt=system_prompt, temperature=temperature,
+                max_new_tokens=1024, **gen_kwargs,
+            )
+
+        result = {
+            "task": task_key,
+            "index": idx,
+            "prompt": prompt,
             "ground_truth": ground_truth,
             "model_response": response,
             "metadata": {
-                "dataset": "RISys-Lab/Benchmarks_CyberSec_CyberMetrics",
-                "subset": "cyberMetric_500",
-                "sample_id": sample_idx,
+                "dataset": "cybermetric/CyberMetric",
+                "source": dataset_url,
+                "sample_id": idx,
                 "task_type": "mcq",
                 "question": question,
                 "choices": answers,
+                "system_prompt": system_prompt,
+                "prompt_mode": "official_evaluator_prompt",
+                "official_inference_script": "CyberMetric_evaluator.py",
+                "generation_params": {
+                    "max_new_tokens": 1024,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "paper_mode": paper_mode,
+                    "paper_ref": "CSR'24 doi:10.1109/CSR61664.2024.10679494 — temp=1.0, top_p=0.9, top_k=50",
+                },
+                "official_answer_extraction": r"ANSWER:?\s*([A-D])",
+                "official_retry_policy": "Original evaluator retries up to 5 times if regex extraction fails.",
+                "original_fields": sample,
             },
-        })
+        }
+        results.append(result)
 
     with open(output_file, "w", encoding="utf-8") as f:
         for result in results:
@@ -1225,9 +1860,224 @@ def collect_cybermetric(model, tokenizer, output_file: str, max_samples: int = N
 
     print(f"✓ Saved {len(results)} responses to: {output_file}")
     return len(results)
+
+def collect_secbench_mcq(task_name: str, dataset_url: str,
+                         model, tokenizer, output_file: str,
+                         max_samples: int = None, **api_kwargs):
+    """Collect SecBench MCQ responses from the original released GitHub data.
+
+    SecBench paper/repo do not provide an exact inference prompt template.
+    This uses a reconstructed MCQ prompt from released fields and preserves
+    the paper's exact-match MCQ scoring assumption in metadata.
+    """
+    print(f"\n{'='*70}")
+    print(f"Collecting {task_name.upper()} responses")
+    print(f"Source: {dataset_url}")
+    print(f"{'='*70}")
+
+    samples = load_concatenated_json_objects(dataset_url)
+
+    # Match previous HF config intent: English MCQs only.
+    samples = [s for s in samples if s.get("language") == "English"]
+
+    if max_samples:
+        samples = samples[:max_samples]
+
+    print(f"Total samples: {len(samples)}")
+
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+
+    valid_samples = [s for s in samples
+                     if s.get("question") and s.get("answers") and s.get("label")]
+
+    def _build_secbench_prompt(s):
+        p = ("Answer the following multiple-choice cybersecurity question. "
+             "Select the correct option letter(s) from A, B, C, and D. "
+             "Return only the letter(s), with no explanation.\n\n")
+        p += str(s["question"]).strip() + "\n"
+        for i, a in enumerate(s["answers"][:4]):
+            p += f"{chr(65+i)}. {a}\n"
+        return p + "Answer:"
+
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(valid_samples)} prompts")
+        batch_responses = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(_build_secbench_prompt(s), None) for s in valid_samples],
+            max_new_tokens=16, temperature=0.0,
+        )
+    else:
+        batch_responses = None
+
+    results = []
+    iter_src = zip(valid_samples, batch_responses) if batch_responses is not None else \
+               ((s, None) for s in tqdm(valid_samples, desc=f"Collecting {task_name.upper()}"))
+
+    for idx, (sample, pre_response) in enumerate(iter_src):
+        question = str(sample.get("question", "") or "").strip()
+        answers = sample.get("answers", [])
+        ground_truth = str(sample.get("label", "") or "").strip()
+        prompt = _build_secbench_prompt(sample)
+
+        if pre_response is not None:
+            response = pre_response
+        else:
+            response = generate_response(
+                model, tokenizer, prompt, max_new_tokens=16, temperature=0.0, **api_kwargs,
+            )
+
+        result = {
+            "task": task_name,
+            "index": idx,
+            "prompt": prompt,
+            "ground_truth": ground_truth,
+            "model_response": response,
+            "metadata": {
+                "dataset": "secbench-git/SecBench",
+                "source": dataset_url,
+                "sample_id": idx,
+                "task_type": "mcq",
+                "prompt_mode": "reconstructed_from_released_fields",
+                "official_prompt_available": False,
+                "official_inference_script": None,
+                "official_eval_framework": "OpenCompass",
+                "official_mcq_scoring": (
+                    "Exact match between model's selected letter(s) and label. "
+                    "For multi-answer MCQs, incomplete or extra selections receive no credit."
+                ),
+                "generation_params": {
+                    "temperature": 0.0,
+                    "max_new_tokens": 16,
+                    "note": (
+                        "SecBench paper/repo do not specify generation parameters; "
+                        "capped because MCQ expects A/B/C/D letter output."
+                    ),
+                },
+                "question": question,
+                "choices": answers,
+                "language": sample.get("language", ""),
+                "ability": sample.get("ability", ""),
+                "level": sample.get("level", ""),
+                "domain": sample.get("domain", ""),
+                "original_fields": sample,
+            },
+        }
+        results.append(result)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+    print(f"✓ Saved {len(results)} SecBench MCQ responses to: {output_file}")
+    return len(results)
     
+
+def collect_redsage_mcq_generation(task_name: str, dataset_name: str, subset_name: str,
+                                   model, tokenizer, output_file: str,
+                                   max_samples: int = None, **api_kwargs):
+    """Collect RedSageMCQ responses using RedSage _em-style generation.
+
+    Faithful pieces:
+    - same RedSage cybersec_prompt_fn layout
+    - include_context=False
+    - generation_size=100
+    - stop_sequence=["\\n"] applied after generation
+    """
+    print(f"\n{'='*70}")
+    print(f"Collecting {task_name.upper()} RedSageMCQ responses")
+    print(f"Dataset: {dataset_name}/{subset_name}")
+    print(f"{'='*70}")
+
+    dataset = load_dataset(dataset_name, subset_name, split="test")
+
+    if max_samples:
+        dataset = dataset.select(range(min(max_samples, len(dataset))))
+
+    print(f"Total samples: {len(dataset)}")
+
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+
+    all_samples = [dict(s) for s in dataset]
+
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(all_samples)} prompts")
+        # Pass stop=["\n"] so vLLM cuts generation at newline — faithful to RedSage EM style.
+        all_prompts = [build_redsage_prompt(s, include_context=False) for s in all_samples]
+        batch_raw = _vllm_batch_generate(
+            vllm_model, tokenizer,
+            [(p, None) for p in all_prompts],
+            max_new_tokens=100, temperature=0.0, stop=["\n"],
+        )
+    else:
+        batch_raw = None
+
+    results = []
+    iter_src = zip(all_samples, batch_raw) if batch_raw is not None else \
+               ((s, None) for s in tqdm(all_samples, desc=f"Collecting {task_name.upper()}"))
+
+    for idx, (sample, pre_raw) in enumerate(iter_src):
+        prompt = build_redsage_prompt(sample, include_context=False)
+        ground_truth = redsage_answer_letter(sample["solution"])
+
+        if pre_raw is not None:
+            raw_response = pre_raw
+        else:
+            raw_response = generate_response(
+                model, tokenizer, prompt, max_new_tokens=100, temperature=0.0, **api_kwargs,
+            )
+
+        response = apply_stop_sequence(raw_response, stop_sequence=["\n"])
+
+        result = {
+            "task": task_name,
+            "index": idx,
+            "prompt": prompt,
+            "ground_truth": ground_truth,
+            "model_response": response,
+            "metadata": {
+                "dataset": dataset_name,
+                "subset": subset_name,
+                "sample_id": idx,
+                "task_type": "mcq",
+                "prompt_mode": "redsage_cybersec_prompt_fn_include_context_false",
+                "official_inference_script": "RISys-Lab/RedSage eval/cybersecurity_benchmarks.py",
+                "official_prompt_function": "cybersec_prompt_fn",
+                "include_context": False,
+                "collector_mode": "generative_em_style",
+                "official_default_metric": "loglikelihood_acc",
+                "official_em_metrics": [
+                    "exact_match",
+                    "prefix_exact_match",
+                    "regex_mcq_acc"
+                ],
+                "generation_params": {
+                    "temperature": 0.0,
+                    "max_new_tokens": 100,
+                    "official_em_generation_size": 100,
+                    "official_em_stop_sequence": ["\\n"],
+                    "stop_sequence_applied_post_generation": True,
+                },
+                "raw_model_response_before_stop": raw_response,
+                "question": sample.get("question", ""),
+                "choices": sample.get("answers", {}),
+                "content_preserved_but_not_prompted": sample.get("content", ""),
+                "original_fields": sample,
+            },
+        }
+        results.append(result)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+    print(f"✓ Saved {len(results)} RedSageMCQ responses to: {output_file}")
+    return len(results)
+
+
 def collect_cissp(model, tokenizer, output_file: str, dataset_path: str = None,
-                 max_samples: int = None, max_new_tokens: int = 1024, **api_kwargs):
+                 max_samples: int = None, **api_kwargs):
     """Collect responses from CISSP"""
     print(f"\n{'='*70}")
     print(f"Collecting CISSP responses")
@@ -1306,8 +2156,8 @@ def collect_cissp(model, tokenizer, output_file: str, dataset_path: str = None,
         prompt += "\nAnswer with the letter only:"
         
         # Generate response
-        response = generate_response(model, tokenizer, prompt, max_new_tokens=max_new_tokens, **api_kwargs)
-
+        response = generate_response(model, tokenizer, prompt, max_new_tokens=1024, **api_kwargs)
+        
         # Store raw result
         result = {
             "task": "cissp",
@@ -1333,6 +2183,141 @@ def collect_cissp(model, tokenizer, output_file: str, dataset_path: str = None,
     return len(results)
 
 
+def is_non_chinese_sample(text: str) -> bool:
+    """Check if text contains no Chinese characters.
+    
+    Note: This only filters out Chinese text; it does not verify the text is English.
+    Used for SEvenLLM-Bench which is specifically bilingual (EN/ZH).
+    """
+    import re
+    # Chinese Unicode ranges: CJK Unified Ideographs
+    chinese_pattern = re.compile(r'[\u4e00-\u9fff]')
+    return not bool(chinese_pattern.search(text))
+
+
+def collect_sevenllm(model, tokenizer, output_file: str, max_samples: int = None, **api_kwargs):
+    """Collect responses from SEvenLLM-Bench (English samples only).
+    
+    SEvenLLM-Bench is a structured extraction benchmark with 24 cybersecurity task categories.
+    This function filters to English-only samples (650 out of 1300 total) based on the input field.
+    
+    Dataset: Multilingual-Multimodal-NLP/SEVENLLM-Dataset on HuggingFace
+    """
+    from huggingface_hub import hf_hub_download
+    
+    print(f"\n{'='*70}")
+    print("Collecting SEVENLLM responses (English filtered)")
+    print("Dataset: Multilingual-Multimodal-NLP/SEVENLLM-Dataset")
+    print(f"{'='*70}")
+    
+    # Download and load dataset manually (HF auto-loader fails due to mixed output types)
+    file_path = hf_hub_download(
+        repo_id='Multilingual-Multimodal-NLP/SEVENLLM-Dataset',
+        filename='test.jsonl',
+        repo_type='dataset'
+    )
+    
+    samples = []
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                samples.append(json.loads(line))
+    
+    print(f"Total samples in dataset: {len(samples)}")
+    
+    # Filter to non-Chinese samples based on INPUT field (not instruction)
+    # The dataset has 650 samples with English input and 650 with Chinese input
+    english_samples = [s for s in samples if is_non_chinese_sample(s.get('input', ''))]
+    
+    print(f"Non-Chinese samples: {len(english_samples)}")
+    
+    if max_samples:
+        english_samples = english_samples[:max_samples]
+    
+    print(f"Samples to process: {len(english_samples)}")
+    
+    use_vllm = api_kwargs.get("use_vllm", False)
+    vllm_model = api_kwargs.get("vllm_model")
+
+    def _build_sevenllm_prompt(sample):
+        instruction = sample.get('instruction', '')
+        input_text = sample.get('input', '')
+        tokenizer_name = str(getattr(tokenizer, "name_or_path", "")).lower()
+        if "qwen" in tokenizer_name:
+            return SEVENLLM_PROMPT_DICT["prompt_input_qwen"].format(
+                instruction=instruction, input=input_text)
+        return SEVENLLM_PROMPT_DICT["prompt_input"].format(
+            instruction=instruction, input=input_text)
+
+    if use_vllm and vllm_model:
+        print(f"  [vLLM batch mode] {len(english_samples)} prompts")
+        all_prompts = [_build_sevenllm_prompt(s) for s in english_samples]
+        batch_responses = generate_responses_vllm(vllm_model, all_prompts, 2000, temperature=0.0)
+    else:
+        batch_responses = None
+
+    # Collect responses
+    results = []
+    iter_src = zip(english_samples, batch_responses) if batch_responses is not None else \
+               ((s, None) for s in tqdm(english_samples, desc="Collecting SEVENLLM"))
+
+    for idx, (sample, pre_response) in enumerate(iter_src):
+        instruction = sample.get('instruction', '')
+        input_text = sample.get('input', '')
+        ground_truth = sample.get('output', '')
+        category = sample.get('category', 'unknown')
+        prompt = _build_sevenllm_prompt(sample)
+
+        if pre_response is not None:
+            response = pre_response
+        else:
+            response = generate_response(model, tokenizer, prompt, max_new_tokens=2000, task_name="sevenllm", **api_kwargs)
+        
+        # Handle ground_truth - it may be dict or string
+        if isinstance(ground_truth, dict):
+            ground_truth = json.dumps(ground_truth)
+        else:
+            ground_truth = str(ground_truth)
+        
+        # Store raw result
+        # Include input_text in metadata for SEvenLLM's evaluation prompt format
+        result = {
+            "task": "sevenllm",
+            "index": idx,
+            "prompt": prompt,
+            "ground_truth": ground_truth,
+            "model_response": response,
+            "metadata": {
+                "dataset": "Multilingual-Multimodal-NLP/SEVENLLM-Dataset",
+                "category": category,
+                "instruction": instruction,
+                "input": input_text,  # Cybersecurity incident content for judge context
+                "task_type": "sevenllm"  # Structured JSON extraction
+            }
+        }
+        results.append(result)
+    
+    # Save to JSONL
+    with open(output_file, 'w') as f:
+        for result in results:
+            f.write(json.dumps(result) + '\n')
+    
+    print(f"✓ Saved {len(results)} responses to: {output_file}")
+    
+    # Print category distribution
+    category_counts = {}
+    for r in results:
+        cat = r['metadata']['category']
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+    print(f"\nCategory distribution ({len(category_counts)} categories):")
+    for cat, count in sorted(category_counts.items(), key=lambda x: -x[1])[:10]:
+        print(f"  {cat}: {count}")
+    if len(category_counts) > 10:
+        print(f"  ... and {len(category_counts) - 10} more categories")
+    
+    return len(results)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Collect raw benchmark responses without evaluation")
     
@@ -1343,18 +2328,17 @@ def main():
     
     # API endpoint options
     parser.add_argument("--use_api", action="store_true", help="Use API endpoint instead of local model")
-    parser.add_argument("--api_endpoint", type=str, help="OpenAI-compatible API endpoint")
-    parser.add_argument("--api_model", type=str, help="Model name for API endpoint")
+    parser.add_argument("--api_endpoint", type=str, help="API endpoint URL")
+    parser.add_argument("--api_model", type=str, help="Model/deployment name for API endpoint")
     parser.add_argument("--api_key", type=str, default="", help="API key if needed")
-    parser.add_argument("--api_style", type=str, default="chat_completions",
-                       choices=["chat_completions", "azure_responses", "anthropic_messages"],
-                       help="API request format: 'chat_completions' (default, OpenAI-compatible), "
-                            "'azure_responses' (Azure OpenAI /openai/responses), or "
-                            "'anthropic_messages' (Anthropic /v1/messages, e.g. Azure pass-through to Claude).")
-    parser.add_argument("--n_api_workers", type=int, default=8,
-                       help="Number of parallel API workers for --use_api mode (default: 8)")
-    parser.add_argument("--skip_completed", action="store_true",
-                       help="Skip tasks where output JSONL already exists")
+    parser.add_argument("--api_type", type=str, default="openai_compat",
+                        choices=["openai_compat", "azure_openai", "azure_claude"],
+                        help=(
+                            "API format to use when --use_api is set. "
+                            "'openai_compat': OpenAI-compatible /chat/completions (default). "
+                            "'azure_openai': Azure OpenAI Responses API (/openai/responses?api-version=...), uses api-key header. "
+                            "'azure_claude': Azure-hosted Claude via Anthropic Messages API (/anthropic/v1/messages), uses x-api-key header."
+                        ))
     
     # vLLM options for fast batch inference
     parser.add_argument("--use_vllm", action="store_true", 
@@ -1362,33 +2346,18 @@ def main():
     parser.add_argument("--vllm_gpu_memory_utilization", type=float, default=0.9,
                        help="GPU memory fraction to use with vLLM (0.0-1.0, default: 0.9)")
     parser.add_argument("--max_model_len", type=int, default=None,
-                       help="Maximum model context length for vLLM (default: use model's native context)")
-    parser.add_argument("--num_gpu_blocks_override", type=int, default=None,
-                       help="Override number of GPU KV cache blocks. Use when vLLM's profiler returns 0 "
-                            "blocks (heterogeneous attention, e.g. Gemma-4). "
-                            "Estimate: floor(available_kv_mem_GiB / per_block_mem_GiB).")
+                       help="Maximum model context length for vLLM (default: model default)")
     parser.add_argument("--enforce_eager", action="store_true",
-                       help="Disable CUDA graph capture (enforce eager mode). Slower but avoids "
-                            "compilation failures on architectures with mixed attention types.")
+                       help="Disable CUDA graph capture in vLLM (needed for Gemma-4 mixed attention)")
     parser.add_argument("--batch_size", type=int, default=16,
                        help="Batch size for vLLM inference (default: 16)")
     
     # Collection options
-    parser.add_argument("--tasks", nargs="+", default=["mcq", "rcm", "vsp", "ate"],
-                       help="Tasks to collect: mcq, rcm, vsp, ate, cti_taa, "
-                            "ckt, rms, taa, athena_ate, athena_rcm, athena_vsp, "
-                            "mmlu-cs, secure_maet, secure_cwet, secure_kcv, secbench, "
-                            "redsage_frameworks, redsage_generals, redsage_skills, "
-                            "redsage_cli, redsage_kali, cybermetric, seceval, cissp, sevenllm. "
-                            "Note: cti_taa=CTI-Bench TAA (50 items, TSV), taa=AthenaBench TAA (100 items, JSONL), "
-                            "athena_ate/rcm/vsp=AthenaBench expanded extraction tasks, "
-                            "sevenllm=SEvenLLM-Bench English subset (~650 items, structured JSON extraction).")
+    parser.add_argument("--tasks", nargs="+", default=["mcq", "rcm", "vsp", "ate"], 
+                       help="Tasks to collect: mcq, rcm, vsp, ate, cti_taa, ckt, rms, taa, mmlu-cs, secure_maet, secure_cwet, secure_kcv, secbench, redsage_frameworks, redsage_generals, redsage_skills, redsage_cli, redsage_kali, cybermetric, cybermetric_paper, seceval, cissp, sevenllm. Note: cybermetric uses temp=0 (deterministic); cybermetric_paper uses temp=1.0+top_p=0.9 (CSR'24 paper). cti_taa is CTI-Bench TAA (50 items), taa is AthenaBench TAA (100 items), sevenllm is SEvenLLM-Bench English samples (650 items)")
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory for JSONL files")
     parser.add_argument("--max_samples", type=int, default=None, help="Limit samples per task (for testing)")
-    parser.add_argument("--max_tokens_config", type=str, default=None,
-                       help="Path to calibration JSON file with per-task max_tokens values "
-                            "(output of calibrate_max_tokens.py). If not provided, uses 1024 for all tasks.")
-
+    
     # Dataset paths
     parser.add_argument("--cissp_path", type=str, default=None, help="Path to CISSP dataset JSON file")
     
@@ -1411,15 +2380,11 @@ def main():
             args.model_path,
             args.base_model,
             args.vllm_gpu_memory_utilization,
-            args.max_model_len,
-            num_gpu_blocks_override=args.num_gpu_blocks_override,
+            max_model_len=args.max_model_len,
             enforce_eager=args.enforce_eager,
         )
         model = None
-        # Load tokenizer separately for chat-template formatting (vLLM doesn't expose this)
-        tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer = None
     else:
         if not args.model_path:
             parser.error("--model_path is required for local inference (or use --use_api or --use_vllm)")
@@ -1455,27 +2420,10 @@ def main():
     if args.use_vllm:
         metadata["vllm_gpu_memory_utilization"] = args.vllm_gpu_memory_utilization
         metadata["batch_size"] = args.batch_size
-        metadata["max_model_len"] = args.max_model_len
-        if args.num_gpu_blocks_override:
-            metadata["num_gpu_blocks_override"] = args.num_gpu_blocks_override
-        if args.enforce_eager:
-            metadata["enforce_eager"] = True
     
     with open(os.path.join(args.output_dir, "metadata.json"), 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    # Load per-task max_tokens from calibration JSON (if provided)
-    task_max_tokens = {}
-    if args.max_tokens_config:
-        with open(args.max_tokens_config, 'r') as f:
-            calib = json.load(f)
-        # Top-level keys are task names with recommended token counts
-        for key, val in calib.items():
-            if key not in ("model", "is_thinking_model", "tasks") and isinstance(val, int):
-                task_max_tokens[key] = val
-        print(f"Loaded per-task max_tokens from: {args.max_tokens_config}")
-        print(f"  Tasks configured: {list(task_max_tokens.keys())}")
-
     # Prepare inference kwargs (api_kwargs name kept for backward compatibility)
     api_kwargs = {
         'use_api': args.use_api,
@@ -1485,96 +2433,170 @@ def main():
         'api_endpoint': args.api_endpoint,
         'api_model': args.api_model,
         'api_key': args.api_key,
-        'api_style': args.api_style,
-        'n_api_workers': args.n_api_workers if args.use_api else 1,
+        'api_type': args.api_type,
     }
-
+    
     # Task configurations
     # Format: "task_name": (dataset_type, dataset_name, subset_or_url)
     task_map = {
-        # RISys-Lab CTI-Bench (HuggingFace)
-        "mcq": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-mcq"),
-        "rcm": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-rcm"),
-        "vsp": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-vsp"),
-        "ate": ("hf", "RISys-Lab/Benchmarks_CyberSec_CTI-Bench", "cti-ate"),
-        # cti_taa: not in the RISys-Lab HF mirror; pull the original TSV from maveryn/cti-bench
-        "cti_taa": ("tsv", "https://raw.githubusercontent.com/maveryn/cti-bench/main/data/cti-taa.tsv", None),
+        # CTI-Bench original TSV files
+        "mcq": ("ctibench_tsv", "https://raw.githubusercontent.com/maveryn/cti-bench/main/data/cti-mcq.tsv", "ctibench_mcq"),
+        "rcm": ("ctibench_tsv", "https://raw.githubusercontent.com/maveryn/cti-bench/main/data/cti-rcm.tsv", "ctibench_rcm"),
+        "rcm_2021": ("ctibench_tsv", "https://raw.githubusercontent.com/maveryn/cti-bench/main/data/cti-rcm-2021.tsv", "ctibench_rcm_2021"),
+        "vsp": ("ctibench_tsv", "https://raw.githubusercontent.com/maveryn/cti-bench/main/data/cti-vsp.tsv", "ctibench_vsp"),
+        "ate": ("ctibench_tsv", "https://raw.githubusercontent.com/maveryn/cti-bench/main/data/cti-ate.tsv", "ctibench_ate"),
+        "cti_taa": ("ctibench_tsv", "https://raw.githubusercontent.com/maveryn/cti-bench/main/data/cti-taa.tsv", "ctibench_taa"),
+
+        # AthenaBench GitHub JSONL tasks
+        "ckt": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-ckt-3k.jsonl", "athenabench_ckt"),
+        "athena_ate": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-ate.jsonl", "athenabench_ate"),
+        "athena_rcm": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-rcm.jsonl", "athenabench_rcm"),
+        "rms": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-rms.jsonl", "athenabench_rms"),
+        "athena_vsp": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-vsp.jsonl", "athenabench_vsp"),
+        "taa": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-taa.jsonl", "athenabench_taa"),
 
         # Other HuggingFace benchmarks
-        "mmlu-cs": ("hf", "lighteval/mmlu", "computer_security"),
-        "secure_maet": ("hf", "RISys-Lab/Benchmarks_CyberSec_SECURE", "MAET"),
-        "secure_cwet": ("hf", "RISys-Lab/Benchmarks_CyberSec_SECURE", "CWET"),
-        "secure_kcv": ("hf", "RISys-Lab/Benchmarks_CyberSec_SECURE", "KCV"),
-        "secbench": ("hf", "RISys-Lab/Benchmarks_CyberSec_SecBench", "MCQs_English"),
-        
-        # RedSageMCQ (5 subsets, 30K total samples)
-        "redsage_frameworks": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_knowledge_frameworks"),
-        "redsage_generals": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_knowledge_generals"),
-        "redsage_skills": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_skills"),
-        "redsage_cli": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_tools_cli"),
-        "redsage_kali": ("hf", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_tools_kali"),
-        
-        # AthenaBench GitHub JSONL tasks (AthenaBench TAA is expanded version: 100 items)
-        "ckt": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-ckt-3k.jsonl", None),
-        "rms": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-rms.jsonl", None),
-        "taa": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-taa.jsonl", None),
-        # AthenaBench expanded extraction tasks (not in CTI-Bench)
-        "athena_ate": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-ate.jsonl", None),
-        "athena_rcm": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-rcm.jsonl", None),
-        "athena_vsp": ("jsonl", "https://github.com/Athena-Software-Group/athenabench/raw/main/benchmark/athena-cti-vsp.jsonl", None),
+        "mmlu-cs": ("mmlu_generation", "cais/mmlu", "computer_security"),
+        "mmlu-cs-logprobs": ("mmlu_logprobs", "cais/mmlu", "computer_security"),    
+        "secure_maet": ("secure_tsv", "https://raw.githubusercontent.com/aiforsec/SECURE/main/Dataset/SECURE%20-%20MAET.tsv", "secure_maet"),
+        "secure_cwet": ("secure_tsv", "https://raw.githubusercontent.com/aiforsec/SECURE/main/Dataset/SECURE%20-%20CWET.tsv", "secure_cwet"),
+        "secure_kcv": ("secure_tsv", "https://raw.githubusercontent.com/aiforsec/SECURE/main/Dataset/SECURE%20-%20KCV.tsv", "secure_kcv"),
+        "secbench": ("secbench_mcq", "https://raw.githubusercontent.com/secbench-git/SecBench/main/data/MCQs_2730.jsonl", "secbench"),
+
+        # RedSageMCQ
+        "redsage_frameworks": ("redsage_generation", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_knowledge_frameworks"),
+        "redsage_generals": ("redsage_generation", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_knowledge_generals"),
+        "redsage_skills": ("redsage_generation", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_skills"),
+        "redsage_cli": ("redsage_generation", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_tools_cli"),
+        "redsage_kali": ("redsage_generation", "RISys-Lab/Benchmarks_CyberSec_RedSageMCQ", "cybersecurity_tools_kali"),
     }
-    
     # Collect responses for each task
     summary = {}
     
     for task_name in args.tasks:
         output_file = os.path.join(args.output_dir, f"{task_name}_responses.jsonl")
-        # Per-task token budget from calibration config (fallback: 1024)
-        task_tokens = task_max_tokens.get(task_name, 1024)
 
-        if args.skip_completed and os.path.exists(output_file):
-            print(f"\n[SKIP] {task_name} — output already exists: {output_file}")
+        # Resume: skip tasks that already have a non-empty output file.
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            existing = sum(1 for _ in open(output_file))
+            print(f"\n[RESUME] {task_name}: {existing} rows already in {output_file} — skipping.")
+            summary[task_name] = {"samples_collected": existing, "output_file": output_file, "resumed": True}
             continue
 
         try:
-            if task_name == "mmlu-cs":
-                # MMLU-CS uses a dedicated 5-shot collector (official Hendrycks format)
-                count = collect_mmlu_cs(model, tokenizer, output_file,
-                                        args.max_samples, task_tokens, **api_kwargs)
-            elif task_name in task_map:
+            if task_name in task_map:
                 # Handle mapped tasks based on type
                 task_type, source, subset_or_url = task_map[task_name]
+                if task_type == "ctibench_tsv":
+                    count = collect_ctibench_tsv(
+                        subset_or_url,
+                        source,
+                        model,
+                        tokenizer,
+                        output_file,
+                        args.max_samples,
+                        **api_kwargs,
+                    )
 
-                if task_type == "hf":
-                    # HuggingFace datasets (CTI-Bench, SECURE, SecBench, RedSageMCQ)
-                    count = collect_huggingface_benchmark(task_name, source, subset_or_url,
-                                                          model, tokenizer, output_file,
-                                                          args.max_samples, task_tokens, **api_kwargs)
+                elif task_type == "secure_tsv":
+                    count = collect_secure_tsv(
+                        subset_or_url,
+                        source,
+                        model,
+                        tokenizer,
+                        output_file,
+                        args.max_samples,
+                        **api_kwargs,
+                    )
+                    
+                elif task_type == "mmlu_generation":
+                    count = collect_mmlu_generation(
+                        task_name,
+                        source,
+                        subset_or_url,
+                        model,
+                        tokenizer,
+                        output_file,
+                        args.max_samples,
+                        **api_kwargs,
+                    )
+
+                elif task_type == "mmlu_logprobs":
+                    count = collect_mmlu_logprobs(
+                        task_name,
+                        source,
+                        subset_or_url,
+                        model,
+                        tokenizer,
+                        output_file,
+                        args.max_samples,
+                        **api_kwargs,
+                    )
+                elif task_type == "secbench_mcq":
+                    count = collect_secbench_mcq(
+                        subset_or_url,
+                        source,
+                        model,
+                        tokenizer,
+                        output_file,
+                        args.max_samples,
+                        **api_kwargs,
+                    )
+
+                elif task_type == "redsage_generation":
+                    count = collect_redsage_mcq_generation(
+                        task_name,
+                        source,
+                        subset_or_url,
+                        model,
+                        tokenizer,
+                        output_file,
+                        args.max_samples,
+                        **api_kwargs,
+                    )
+
+                elif task_type == "hf":
+                    # HuggingFace datasets.
+                    # subset_or_url stores the HF subset/config name.
+                    count = collect_huggingface_benchmark(
+                        task_name,
+                        source,
+                        subset_or_url,
+                        model,
+                        tokenizer,
+                        output_file,
+                        args.max_samples,
+                        **api_kwargs,
+                    )
+
                 elif task_type == "jsonl":
-                    # AthenaBench GitHub JSONL tasks
-                    count = collect_athenabench_jsonl(task_name, source,
-                                                      model, tokenizer, output_file,
-                                                      args.max_samples, task_tokens, **api_kwargs)
-                elif task_type == "tsv":
-                    # CTI-Bench original TSV files (e.g. cti_taa)
-                    count = collect_ctibench_tsv(task_name, source,
-                                                 model, tokenizer, output_file,
-                                                 args.max_samples, task_tokens, **api_kwargs)
-            elif task_name == "sevenllm":
-                # SEvenLLM-Bench needs custom prompt template + EN-only filter; default
-                # to 2000 tokens since outputs are open-ended JSON, but allow calibration override
-                sevenllm_tokens = task_max_tokens.get("sevenllm", 2000)
-                count = collect_sevenllm(model, tokenizer, output_file,
-                                         args.max_samples, sevenllm_tokens, **api_kwargs)
+                    # GitHub JSONL datasets.
+                    # subset_or_url stores the canonical task name, e.g. athenabench_ckt.
+                    count = collect_athenabench_jsonl(
+                        subset_or_url,
+                        source,
+                        model,
+                        tokenizer,
+                        output_file,
+                        args.max_samples,
+                        **api_kwargs,
+                    )
+    
             elif task_name == "seceval":
-                count = collect_seceval(model, tokenizer, output_file,
-                                       args.max_samples, task_tokens, **api_kwargs)
+                count = collect_seceval(model, tokenizer, output_file, 
+                                       args.max_samples, **api_kwargs)
             elif task_name == "cybermetric":
                 count = collect_cybermetric(model, tokenizer, output_file,
-                                        args.max_samples, task_tokens, **api_kwargs)
+                                        args.max_samples, paper_mode=False, **api_kwargs)
+            elif task_name == "cybermetric_paper":
+                count = collect_cybermetric(model, tokenizer, output_file,
+                                        args.max_samples, paper_mode=True, **api_kwargs)
             elif task_name == "cissp":
                 count = collect_cissp(model, tokenizer, output_file, args.cissp_path,
-                                     args.max_samples, task_tokens, **api_kwargs)
+                                     args.max_samples, **api_kwargs)
+            elif task_name == "sevenllm":
+                count = collect_sevenllm(model, tokenizer, output_file,
+                                        args.max_samples, **api_kwargs)
             else:
                 print(f"Unknown task: {task_name}, skipping...")
                 continue

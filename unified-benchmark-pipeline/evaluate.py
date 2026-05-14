@@ -107,80 +107,161 @@ def load_model_and_tokenizer(model_path: str, base_model: str = None, is_base: b
     return model, tokenizer
 
 
-def chat_completion_api(endpoint: str, model_name: str, prompt: str, 
-                       api_key: str = "", max_tokens: int = 1024, 
-                       temperature: float = 0.1, retries: int = 3, 
-                       api_version: str = "2024-02-15-preview") -> str:
-    """Call OpenAI-compatible API endpoint (supports both OpenAI and Azure OpenAI)"""
-    
-    # Detect if this is Azure endpoint
-    is_azure = "cognitiveservices.azure.com" in endpoint or "openai.azure.com" in endpoint
-    
-    headers = {"Content-Type": "application/json"}
-    
-    if is_azure:
-        # Azure OpenAI authentication
-        headers["api-key"] = api_key
-        # For Azure, model_name is the deployment name
-        # Format: {endpoint}/openai/deployments/{deployment_name}/chat/completions?api-version={version}
-        if endpoint.endswith("/"):
-            endpoint = endpoint.rstrip("/")
-        url = f"{endpoint}/openai/deployments/{model_name}/chat/completions?api-version={api_version}"
-    else:
-        # Standard OpenAI API
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        url = endpoint
-    
-    payload = {
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    
-    # Only add model to payload for non-Azure (Azure uses deployment in URL)
-    if not is_azure:
-        payload["model"] = model_name
-    
+def chat_completion_api(endpoint: str, model_name: str, prompt: str,
+                       api_key: str = "", max_tokens: int = 1024,
+                       temperature: float = 0.1, retries: int = 5,
+                       api_version: str = "2024-12-01-preview",
+                       messages: list = None,
+                       http_timeout: float = 60.0) -> str:
+    """Call Azure OpenAI chat completions API using the official SDK."""
+    import random
+    from openai import AzureOpenAI, RateLimitError, APITimeoutError, BadRequestError
+
+    client = AzureOpenAI(
+        api_version=api_version,
+        azure_endpoint=endpoint,
+        api_key=api_key,
+        timeout=http_timeout,
+        max_retries=0,
+    )
+
+    if messages is None:
+        messages = [{"role": "user", "content": prompt}]
+
     for attempt in range(retries):
         try:
-            r = requests.post(url, headers=headers, json=payload, timeout=120)
-            if r.status_code != 200:
-                print(f"API returned status {r.status_code}: {r.text[:200]}")
-                time.sleep(2 ** attempt)
-                continue
-            data = r.json()
-            if not data.get("choices"):
-                print(f"API response missing 'choices': {data}")
-                time.sleep(2 ** attempt)
-                continue
-            
-            choice = data["choices"][0]
-            msg = choice.get("message", {}) or {}
-            content = msg.get("content") or msg.get("reasoning_content") or choice.get("text") or ""
-            return str(content).strip()
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                max_completion_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except BadRequestError as e:
+            # 400 errors are deterministic — retrying won't change the outcome.
+            # Most common case: Azure content filter on security-benchmark prompts.
+            err_str = str(e)
+            if "content_filter" in err_str or "content management policy" in err_str:
+                return f"ERROR: content_filter — {err_str[:200]}"
+            return f"ERROR: bad_request — {err_str[:200]}"
+        except RateLimitError as e:
+            wait = 45 + random.uniform(0, 15)
+            print(f"Rate-limited (attempt {attempt+1}/{retries}), sleeping {wait:.1f}s: {e}")
+            time.sleep(wait)
+        except APITimeoutError as e:
+            wait = 10 + random.uniform(0, 10)
+            print(f"Timeout (attempt {attempt+1}/{retries}), sleeping {wait:.1f}s: {e}")
+            time.sleep(wait)
         except Exception as e:
-            print(f"API call failed (attempt {attempt+1}/{retries}): {e}")
-            time.sleep(2 ** attempt)
-    
-    return ""
+            wait = 2 ** attempt + random.uniform(0, 2)
+            if attempt < retries - 1:
+                print(f"API error (attempt {attempt+1}/{retries}), sleeping {wait:.1f}s: {e}")
+                time.sleep(wait)
+            else:
+                print(f"API call failed after {retries} attempts: {e}")
+    return "ERROR: exhausted retries"
 
 
-def generate_response(model, tokenizer, prompt: str, max_new_tokens: int = 1024, 
-                     use_api: bool = False, api_endpoint: str = None, 
-                     api_model: str = None, api_key: str = "", api_version: str = None):
+# Kept for backward compatibility — delegates to chat_completion_api
+def chat_responses_api(endpoint: str, model_name: str, prompt: str,
+                      api_key: str = "", max_tokens: int = 1024,
+                      temperature: float = 0.0, retries: int = 3) -> str:
+    return chat_completion_api(endpoint, model_name, prompt,
+                               api_key=api_key, max_tokens=max_tokens,
+                               temperature=temperature, retries=retries)
+
+
+def anthropic_messages_api(endpoint: str, model_name: str, prompt: str,
+                           api_key: str = "", max_tokens: int = 1024,
+                           temperature: float = 0.0, retries: int = 5,
+                           http_timeout: float = 60.0) -> str:
+    """Call an Anthropic-style /v1/messages endpoint (e.g. Azure pass-through).
+
+    Endpoint is expected to be the full messages URL, e.g.
+    https://<host>/anthropic/v1/messages. Auth uses x-api-key + anthropic-version.
+    """
+    import random
+    import requests as _rq
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": model_name,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    for attempt in range(retries):
+        try:
+            r = _rq.post(endpoint, headers=headers, json=payload, timeout=http_timeout)
+            if r.status_code == 200:
+                data = r.json()
+                # Anthropic returns {"content": [{"type":"text","text":"..."}], ...}
+                parts = data.get("content") or []
+                texts = [p.get("text", "") for p in parts if p.get("type") == "text"]
+                return ("".join(texts)).strip()
+            if r.status_code == 400:
+                # Deterministic; don't retry. Most often content filter.
+                body = r.text[:200]
+                if "content_filter" in body or "policy" in body.lower():
+                    return f"ERROR: content_filter — {body}"
+                return f"ERROR: bad_request — {body}"
+            if r.status_code == 429:
+                wait = 45 + random.uniform(0, 15)
+                print(f"Anthropic 429 (attempt {attempt+1}/{retries}), sleeping {wait:.1f}s")
+                time.sleep(wait)
+                continue
+            # 5xx / other transient
+            wait = 2 ** attempt + random.uniform(0, 2)
+            if attempt < retries - 1:
+                print(f"Anthropic API {r.status_code} (attempt {attempt+1}/{retries}), "
+                      f"sleeping {wait:.1f}s: {r.text[:200]}")
+                time.sleep(wait)
+            else:
+                return f"ERROR: http_{r.status_code} — {r.text[:200]}"
+        except _rq.Timeout:
+            wait = 10 + random.uniform(0, 10)
+            print(f"Anthropic timeout (attempt {attempt+1}/{retries}), sleeping {wait:.1f}s")
+            time.sleep(wait)
+        except Exception as e:
+            wait = 2 ** attempt + random.uniform(0, 2)
+            if attempt < retries - 1:
+                print(f"Anthropic error (attempt {attempt+1}/{retries}), sleeping {wait:.1f}s: {e}")
+                time.sleep(wait)
+            else:
+                return f"ERROR: exception — {e}"
+    return "ERROR: exhausted retries"
+
+
+def generate_response(model, tokenizer, prompt: str, max_new_tokens: int = 1024,
+                     use_api: bool = False, api_endpoint: str = None,
+                     api_model: str = None, api_key: str = "", api_version: str = None,
+                     api_style: str = "chat_completions", **kwargs):
     """Generate response from model (local or API)"""
-    
+
     # API mode
     if use_api:
         if not api_endpoint or not api_model:
             raise ValueError("API endpoint and model name required for API mode")
-        
-        # Get API version from parameter or environment (for Azure)
+
+        if api_style == "anthropic_messages":
+            return anthropic_messages_api(api_endpoint, api_model, prompt, api_key, max_new_tokens)
+
+        if api_style not in ("chat_completions", "azure_responses"):
+            raise ValueError(
+                f"Unsupported api_style for generate_response: {api_style!r}. "
+                f"Supported: 'chat_completions', 'anthropic_messages'."
+            )
+
+        # Get API version from parameter or environment variable
         if api_version is None:
-            api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
-        
-        return chat_completion_api(api_endpoint, api_model, prompt, api_key, max_new_tokens, 
+            api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+
+        return chat_completion_api(api_endpoint, api_model, prompt, api_key, max_new_tokens,
                                    api_version=api_version)
     
     # Local model mode

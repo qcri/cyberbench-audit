@@ -17,6 +17,9 @@ import json
 import torch
 import requests
 import argparse
+from dotenv import load_dotenv
+load_dotenv()
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Any, List
 from tqdm import tqdm
@@ -80,294 +83,175 @@ def load_jsonl_dataset(source: str) -> HFDataset:
     return HFDataset.from_list(data)
 
 
-def create_judge_prompt(task_type: str, question: str, model_answer: str, 
+def create_judge_prompt(task_type: str, question: str, model_answer: str,
                        ground_truth: str, extra_context: dict = None) -> str:
-    """Create a prompt for the LLM judge to evaluate model answer
-    
-    This function acts as a TEMPLATE SELECTOR - it returns a different evaluation
-    prompt based on the task type. Each template is optimized for that task's
-    specific requirements.
-    
-    STRUCTURE FOR EACH TASK:
-    ┌─────────────────────────────────────┐
-    │ 1. Context (what are you judging?)  │
-    │ 2. Question                          │
-    │ 3. Correct Answer                    │
-    │ 4. Model's Response                  │
-    │ 5. Evaluation Instructions           │
-    │ 6. Output Format (CORRECT/INCORRECT) │
-    └─────────────────────────────────────┘
-    
-    TASK TYPES:
-    - mcq/cybermetric/cissp/mmlu_cs/secure/secbench/ckt: Single/multi-choice questions (A/B/C/D/E)
-    - seceval: Multi-select questions (can be ABC, AD, etc.)
-    - rcm: CWE ID extraction (CWE-79, etc.)
-    - vsp: CVSS score prediction (0.0-10.0) - regression task, returns MAD
-    - ate: MITRE ATT&CK techniques (T1234, T1234.567)
-    - rms: Risk mitigation strategies (M1018, M1026, etc.)
-    - taa: Threat actor attribution (actor names)
-    
-    Args:
-        task_type: Type of task (mcq, rcm, vsp, ate, cybermetric, seceval, cissp, mmlu_cs, secure, secbench, ckt, rms, taa)
-        question: Original question/prompt
-        model_answer: Model's response
-        ground_truth: Correct answer
-        extra_context: Additional context (e.g., answer choices for MCQ)
-    
-    Returns:
-        Formatted prompt for judge
+    """Create a unified judge prompt: extract + verdict in one call.
+
+    Unified output schema (every task):
+        {
+          "extracted_answer": "<verbatim model answer in cleaned form>",
+          "verdict": "CORRECT" | "INCORRECT",
+          "justification": "<one sentence>"
+        }
+
+    The judge does extraction AND verdict — comparison rules are described in
+    natural language per task. No regex/Python post-processing.
+
+    TASK FORMATS (extracted_answer):
+      - MCQ-style (mcq/cybermetric/cissp/mmlu_cs/secure/secbench/ckt): single letter A-E
+      - seceval: sorted concatenated letters, e.g. "ABC"
+      - rcm: comma-separated sorted CWE IDs, e.g. "CWE-79,CWE-89"
+      - vsp: CVSS:3.1 vector string
+      - ate: comma-separated sorted PARENT technique IDs, e.g. "T1027,T1059"
+      - rms: comma-separated sorted M-IDs, e.g. "M1018,M1026"
+      - taa: canonical threat actor name (e.g. "Lazarus Group")
     """
-    
-    # ============================================================
-    # SINGLE-CHOICE MCQ: mcq, cybermetric, cissp, mmlu_cs, secure, secbench, ckt
-    # Expected answer: A single letter (A, B, C, D, or E for CKT)
-    # ============================================================
-    if task_type in ["mcq", "cybermetric", "cissp", "mmlu_cs", "secure", "secbench", "ckt"]:
-        choices_info = ""
+
+    # Task-specific extraction-format hints + comparison rules
+    if task_type in ("mcq", "cybermetric", "cissp", "mmlu_cs", "secure", "secbench", "ckt"):
+        ctx = ""
         if extra_context and "choices" in extra_context:
-            choices_info = f"\n\nAnswer Choices:\n{extra_context['choices']}"
-        
-        return f"""You are evaluating a model's answer to a multiple-choice cybersecurity question.
-
-Question:
-{question}{choices_info}
-
-Correct Answer: {ground_truth}
-
-Model's Response:
-{model_answer}
-
-Task: Determine if the model's response contains the correct answer ({ground_truth}).
-The model may provide reasoning before the answer. Look for the final answer in the response.
-
-Respond ONLY with a JSON object in this exact format:
-{{
-  "verdict": "CORRECT" or "INCORRECT",
-  "justification": "one-sentence explanation of your decision"
-}}
-
-Your judgment:"""
-
-    # ============================================================
-    # MULTI-SELECT MCQ: seceval
-    # Expected answer: Multiple letters (e.g., "ABC", "AD", "B")
-    # Logic from evaluate.py: Extract A-D, deduplicate, sort, then compare
-    # "CAB" and "ABC" are both normalized to "ABC" → match
-    # "AB" vs "ABC" → no match (missing C)
-    # "ABCD" vs "ABC" → no match (extra D)
-    # ============================================================
+            ctx = f"\n\nAnswer Choices:\n{extra_context['choices']}"
+        question_block = f"Question:\n{question}{ctx}"
+        format_hint = "a single uppercase letter (A, B, C, D, or E)"
+        compare_rule = (
+            "Verdict is CORRECT if the extracted letter equals the correct answer "
+            "(case-insensitive). Otherwise INCORRECT."
+        )
     elif task_type == "seceval":
-        return f"""You are evaluating a model's answer to a multi-select cybersecurity question.
-
-Question:
-{question}
-
-Correct Answer: {ground_truth}
-
-Model's Response:
-{model_answer}
-
-Task: Determine if the model selected the exact same SET of options as the correct answer.
-Extract all letters A-D from the model's response, deduplicate and sort them, then compare.
-Examples:
-- Model says "CAB" or "ABC" or "A, B, C" → all become "ABC"
-- If correct is "ABC": "ABC" is CORRECT, "AB" is INCORRECT (missing), "ABCD" is INCORRECT (extra)
-
-Respond ONLY with a JSON object in this exact format:
-{{
-  "verdict": "CORRECT" or "INCORRECT",
-  "justification": "one-sentence explanation of your decision"
-}}
-
-Your judgment:"""
-
-    # ============================================================
-    # CWE IDENTIFICATION: rcm (Root Cause Mapping)
-    # Expected answer: CWE IDs (e.g., "CWE-79", "CWE-89")
-    # May have multiple correct CWEs
-    # ============================================================
+        question_block = f"Question:\n{question}"
+        format_hint = (
+            "uppercase letters concatenated and sorted alphabetically, e.g. "
+            '"B" or "AB" or "ACD". If the model gave no clear answer, output "NONE".'
+        )
+        compare_rule = (
+            "Verdict is CORRECT only if the extracted set of letters equals the correct "
+            "set exactly (case-insensitive, order ignored). Partial matches are INCORRECT: "
+            'e.g. correct="ABC" → "ABC" CORRECT; "AB" INCORRECT (missing); "ABCD" INCORRECT (extra).'
+        )
     elif task_type == "rcm":
-        return f"""You are evaluating a model's CWE identification for a CVE.
-
-Question:
-{question}
-
-Correct CWE ID(s): {ground_truth}
-
-Model's Response:
-{model_answer}
-
-Task: Determine if the model identified the correct CWE ID(s).
-Look for CWE identifiers in format "CWE-XXX". Multiple CWEs may be correct.
-
-Respond ONLY with a JSON object in this exact format:
-{{
-  "verdict": "CORRECT" or "INCORRECT",
-  "justification": "one-sentence explanation of your decision"
-}}
-
-Your judgment:"""
-
-    # ============================================================
-    # CVSS VECTOR: vsp (Vulnerability Severity Prediction)
-    # Expected answer: CVSS vector string (e.g., CVSS:3.1/AV:N/AC:L/...)
-    # Judge extracts vector, then Python calculates MAD using CVSS library
-    # ============================================================
+        question_block = f"Question:\n{question}"
+        format_hint = (
+            'comma-separated sorted CWE IDs in canonical form "CWE-NNN", '
+            'e.g. "CWE-79" or "CWE-79,CWE-89". If no valid CWE was given, output "NONE".'
+        )
+        compare_rule = (
+            "Verdict is CORRECT only if the extracted CWE-ID set equals the correct CWE-ID set exactly "
+            "(treat \"CWE-79\", \"cwe-79\", \"79\" as equivalent — same numeric ID). "
+            "Partial/missing/extra IDs are INCORRECT."
+        )
     elif task_type == "vsp":
-        return f"""You are extracting CVSS vectors from security assessment responses.
-
-Question:
-{question}
-
-Model's Response:
-{model_answer}
-
-Task: Extract the CVSS v3.1 vector from the model's response.
-
-CRITICAL INSTRUCTIONS:
-1. Find the CVSS vector string in the response (format: CVSS:3.1/AV:X/AC:X/PR:X/UI:X/S:X/C:X/I:X/A:X or AV:X/AC:X/...)
-2. Normalize the prefix:
-   - If it starts with CVSS:3.0/, change to CVSS:3.1/
-   - If it starts with CVSS:3.1/, keep as is
-   - If no prefix, add CVSS:3.1/
-3. If no valid CVSS vector is found in the response, set extraction_success to false
-4. Only extract the vector components (AV, AC, PR, UI, S, C, I, A) - ignore any numerical scores
-
-Respond ONLY with a JSON object in this exact format:
-{{
-  "extracted_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
-  "extraction_success": true
-}}
-
-Your extraction:"""
-
-    # ============================================================
-    # MITRE TECHNIQUES: ate (ATT&CK Technique Extraction)
-    # Expected answer: Technique IDs (e.g., "T1234", "T1234.567")
-    # Special rule: T1234.567 and T1234 may be equivalent
-    # ============================================================
+        question_block = f"Question:\n{question}"
+        format_hint = (
+            'a CVSS v3.1 vector string starting with "CVSS:3.1/", '
+            'e.g. "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H". '
+            'If the model started with "CVSS:3.0/" change it to "CVSS:3.1/". '
+            'If no vector prefix is present, prepend "CVSS:3.1/". '
+            'If no valid CVSS vector is found, output "NONE".'
+        )
+        compare_rule = (
+            "Verdict is CORRECT if the extracted vector equals the correct vector after "
+            "case-insensitive normalization and prefix normalization (CVSS:3.0/ ≡ CVSS:3.1/). "
+            "Otherwise INCORRECT."
+        )
     elif task_type == "ate":
-        return f"""You are evaluating a model's MITRE ATT&CK technique identification.
-
-Question:
-{question}
-
-Correct Technique ID(s): {ground_truth}
-
-Model's Response:
-{model_answer}
-
-Task: Determine if the model identified the correct MITRE ATT&CK technique(s).
-Look for technique IDs in format "T####" or "T####.###" (subtechniques).
-Note: T1234.567 and T1234 may be considered equivalent (subtechnique vs parent).
-
-Respond ONLY with a JSON object in this exact format:
-{{
-  "verdict": "CORRECT" or "INCORRECT",
-  "justification": "one-sentence explanation of your decision"
-}}
-
-Your judgment:"""
-
-    # ============================================================
-    # RMS: Risk Mitigation Strategies
-    # Expected answer: Comma-separated MITRE ATT&CK mitigation IDs (M1018, M1026, M1028, M1047)
-    # ============================================================
+        question_block = f"Question:\n{question}"
+        format_hint = (
+            'comma-separated sorted PARENT MITRE ATT&CK technique IDs, e.g. "T1027,T1059". '
+            'IMPORTANT: strip any subtechnique suffix — "T1059.001" must become "T1059". '
+            'Output ONLY parent IDs (uppercase T followed by 4 digits, no dot). '
+            'If no valid technique was given, output "NONE".'
+        )
+        compare_rule = (
+            "Verdict is CORRECT only if the extracted set of PARENT technique IDs equals the "
+            "correct set of parent IDs exactly. Always strip subtechnique suffixes from BOTH "
+            'extracted and ground truth before comparing ("T1059.001" → "T1059"). '
+            "Partial/missing/extra parent IDs are INCORRECT."
+        )
     elif task_type == "rms":
-        return f"""You are evaluating a model's answer to a risk mitigation strategy question.
-
-Question:
-{question}
-
-Correct Answer: {ground_truth}
-
-Model's Response:
-{model_answer}
-
-Task: Determine if the model identified the correct MITRE ATT&CK mitigation IDs.
-Look for mitigation IDs in format "M10xx" (e.g., M1037, M1041).
-The model should identify the same set of mitigations, though order doesn't matter.
-
-Respond ONLY with a JSON object in this exact format:
-{{
-  "verdict": "CORRECT" or "INCORRECT",
-  "justification": "one-sentence explanation of your decision"
-}}
-
-Your judgment:"""
-
-    # ============================================================
-    # TAA: Threat Actor Attribution
-    # Expected answer: Threat actor name (e.g., "TraderTraitor", "Lazarus")
-    # ============================================================
+        question_block = f"Question:\n{question}"
+        format_hint = (
+            'comma-separated sorted MITRE mitigation IDs in form "MNNNN", '
+            'e.g. "M1018,M1026,M1047". If no valid mitigation was given, output "NONE".'
+        )
+        compare_rule = (
+            "Verdict is CORRECT only if the extracted set of mitigation IDs equals the correct "
+            "set exactly (case-insensitive, order ignored). Partial/missing/extra IDs are INCORRECT."
+        )
     elif task_type == "taa":
-        return f"""You are evaluating a model's answer to a threat actor attribution question.
+        question_block = f"Question:\n{question}"
+        format_hint = (
+            "the threat actor name as the model gave it, in canonical form (most common name). "
+            'If no actor was given, output "NONE".'
+        )
+        compare_rule = (
+            "Verdict is CORRECT if the extracted actor name refers to the same threat actor as "
+            "the correct answer (case-insensitive; common aliases are equivalent, e.g. "
+            "\"APT28\" ≡ \"Fancy Bear\", \"Lazarus\" ≡ \"Lazarus Group\"). Otherwise INCORRECT."
+        )
+    elif task_type == "sevenllm":
+        question_block = f"Question:\n{question}"
+        format_hint = (
+            'a concise single-line summary (≤300 chars) of the FACTS the model extracted or '
+            'generated. For information-extraction tasks (JSON output): list the key '
+            'entities/values the model produced as "field: value; field: value" pairs '
+            '(e.g., "Malware: Dridex; capabilities: payload drop, ransomware; evasion: '
+            'password-protected Excel"). For analysis-generation tasks (text output): a '
+            'one-sentence paraphrase of the model\'s main claim. If the model gave no usable '
+            'answer (empty, refusal, garbage), output "NONE".'
+        )
+        compare_rule = (
+            "This is a SEVENLLM cybersecurity information-extraction (JSON output) or "
+            "analysis-generation (text output) task. The instruction shown to the model in the "
+            "Question block specifies which category (e.g. Malware Feature Extraction, Threat "
+            "Analysis, Time Element Acquisition). Compare the extracted answer to the correct "
+            "answer SEMANTICALLY, not by schema or wording:\n"
+            "- The model's JSON schema may legitimately differ from the ground-truth schema "
+            "(different key names, different nesting). What matters is whether the same "
+            "factual entities/values are captured.\n"
+            "- Treat common aliases and abbreviations as equivalent (e.g. \"US\" ≡ \"United "
+            "States\", \"AES-256\" ≡ \"AES\", semantically-similar phrasings).\n"
+            "- Verdict is CORRECT if the model captures the CENTRAL facts of the correct "
+            "answer (main entity, primary list, key claim) with no contradictions on those "
+            "central facts and no major fabricated entities. Missing peripheral details are OK.\n"
+            "- Verdict is INCORRECT if the model misses the central facts, contradicts the "
+            "ground truth on a key entity/value, or hallucinates major entities not supported "
+            "by the source.\n"
+            "Be lenient on phrasing and schema, strict on factual coverage of the central facts."
+        )
+    else:
+        raise ValueError(
+            f"Unknown task_type: {task_type}. Supported: mcq, rcm, vsp, ate, cybermetric, "
+            f"seceval, cissp, mmlu_cs, secure, secbench, ckt, rms, taa, sevenllm"
+        )
 
-Question:
-{question}
+    return f"""You are a strict evaluator for a cybersecurity benchmark. Your role has TWO steps.
+
+{question_block}
 
 Correct Answer: {ground_truth}
 
 Model's Response:
 {model_answer}
 
-Task: Determine if the model identified the correct threat actor.
-The model's answer should match the expected threat actor name.
-Account for minor variations in naming (e.g., "Lazarus Group" vs "Lazarus").
+STEP 1 — EXTRACT the model's answer.
+- Look for the model's explicit final answer (e.g., "Answer:", "Final answer:", concluding line, single bolded line at top).
+- IGNORE letters/IDs/text that appear only inside explanations of other options or thinking-aloud prose.
+- If the model gives multiple inconsistent answers, use its most prominent/final selection.
+- DO NOT correct, infer, or improve the model's answer — extract verbatim what it actually said.
+- Format the extracted answer as: {format_hint}
 
-Respond ONLY with a JSON object in this exact format:
+STEP 2 — VERDICT.
+{compare_rule}
+
+Output ONLY this JSON, nothing else:
 {{
+  "extracted_answer": "<your extraction in the format above>",
   "verdict": "CORRECT" or "INCORRECT",
-  "justification": "one-sentence explanation of your decision"
+  "justification": "<one short sentence explaining what you extracted and why the verdict>"
 }}
 
 Your judgment:"""
-
-    # ============================================================
-    # SEvenLLM: Structured JSON Extraction Tasks
-    # Uses SEvenLLM's GPT-4 scoring approach: 1-5 scale
-    # Reference: https://github.com/CSJianYang/SEevenLLM/blob/main/code/score/get_score_gpt4_prompt.py
-    # ============================================================
-    elif task_type == "sevenllm":
-        return f"""As a knowledge analysis expert in the field of cybersecurity, please rate the following network security event Q&A results.
-
-The content of the network security incident is:
-{extra_context.get('input', question) if extra_context else question}
-
-The question raised regarding the content of this cybersecurity incident is:
-{extra_context.get('instruction', question) if extra_context else question}
-
-The expected answer (ground truth) is:
-{ground_truth}
-
-The model's answer provided for this event's content and question is:
-{model_answer}
-
-Scoring method:
-Using a 5-point scoring system:
-- 1 point: very poor (completely wrong or irrelevant)
-- 2 points: slightly poor (major errors or missing key information)
-- 3 points: usable (partially correct but incomplete)
-- 4 points: good (mostly correct with minor issues)
-- 5 points: very good (accurate, complete, matches expected output)
-
-Scoring reference criteria:
-- Whether the answer is answered accurately as required by the question
-- Whether the format is regular and the language is coherent and readable
-- Whether the extracted information matches the expected output
-- Whether the overall content has information value in the field of network security
-
-Respond ONLY with a JSON object in this exact format:
-{{
-  "score": <1-5>,
-  "reason": "explanation of your score"
-}}
-
-Your evaluation:"""
-
-    else:
-        # mmlu_cs is handled by the mcq branch above (task_type in ["mcq", ..., "mmlu_cs", ...])
-        raise ValueError(f"Unknown task_type: {task_type}. Supported: mcq, rcm, vsp, ate, cybermetric, seceval, cissp, mmlu_cs, secure, secbench, ckt, rms, taa, sevenllm")
 
 
 def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
@@ -391,108 +275,74 @@ def parse_judge_response(judge_response: str, task_type: str) -> Dict[str, Any]:
                 - judge_response: str (raw judge output)
                 - justification: str (judge's explanation)
     """
+    # Detect judge API failures — content filter, timeout, exhausted retries, empty response.
+    # These should not count as wrong answers; return skipped=True so the caller
+    # excludes this sample from both numerator and denominator.
+    if (not judge_response.strip()
+            or judge_response.startswith("ERROR:")
+            or "content management policy" in judge_response
+            or "content_filter" in judge_response):
+        return {
+            "is_correct": False, "skipped": True,
+            "extracted_answer": "", "judge_response": judge_response,
+            "justification": "Judge API failure — sample excluded from scoring",
+        }
+
     # Parse JSON response with error handling
+    json_str = None
     try:
-        # Extract JSON from response (handle markdown code blocks)
         json_match = re.search(r'```(?:json)?\s*({.*?})\s*```', judge_response, re.DOTALL)
         if json_match:
             json_str = json_match.group(1)
         else:
-            # Try to find raw JSON
             json_match = re.search(r'{.*}', judge_response, re.DOTALL)
             json_str = json_match.group(0) if json_match else judge_response
-        
+
         parsed = json.loads(json_str)
-        
-        # VSP uses extraction format (different from other tasks)
-        if task_type == "vsp":
-            extracted_vector = parsed.get("extracted_vector", "")
-            extraction_success = parsed.get("extraction_success", False)
-            
-            return {
-                "extracted_vector": extracted_vector,
-                "extraction_success": extraction_success,
-                "judge_response": judge_response
-            }
-        
-        # For other tasks, extract verdict
-        verdict = parsed.get("verdict", "").strip().upper()
+
+        extracted_answer = str(parsed.get("extracted_answer", "")).strip()
+        verdict = str(parsed.get("verdict", "")).strip().upper()
         justification = parsed.get("justification", "No justification provided")
-        
-        # Handle sevenllm with SEvenLLM's 1-5 scoring scale
-        if task_type == "sevenllm":
-            score = parsed.get("score", 1)
-            try:
-                numeric_score = float(score)
-            except (TypeError, ValueError):
-                numeric_score = 1.0
-
-            score = max(1, min(5, int(numeric_score)))
-            reason = parsed.get("reason", "No reason provided")
-            return {
-                "score": score,
-                "reason": reason,
-                "judge_response": judge_response,
-                "justification": reason
-            }
-
         is_correct = verdict == "CORRECT"
-        
-        return {
-            "is_correct": is_correct,
-            "judge_response": judge_response,
-            "justification": justification
-        }
-        
-    except (json.JSONDecodeError, AttributeError) as e:
-        # Fallback to legacy parsing if JSON parsing fails
-        print(f"Warning: Failed to parse JSON from judge response: {e}")
-        print(f"Raw response: {judge_response[:200]}...")
-        
-        if task_type == "vsp":
-            # For VSP, try to extract CVSS vector with regex as fallback
-            cvss_pattern = r'(?:CVSS:3\.[01]/)?AV:[A-Z]+/AC:[A-Z]+/PR:[A-Z]+/UI:[A-Z]+/S:[A-Z]+/C:[A-Z]+/I:[A-Z]+/A:[A-Z]+'
-            match = re.search(cvss_pattern, judge_response, re.IGNORECASE)
-            if match:
-                return {
-                    "extracted_vector": match.group(0),
-                    "extraction_success": True,
-                    "judge_response": judge_response
-                }
-            return {
-                "extracted_vector": "",
-                "extraction_success": False,
-                "judge_response": judge_response
-            }
-        
-        # For sevenllm, fallback to extracting score from text
-        if task_type == "sevenllm":
-            # Try to find the full numeric score in the response, then clamp to 1-5
-            score_match = re.search(r'["\']?score["\']?\s*[:=]\s*(\d+)\b', judge_response)
-            if score_match:
-                score = int(score_match.group(1))
-            else:
-                # Fallback: look for any digit 1-5
-                digits = re.findall(r'\b([1-5])\b', judge_response)
-                score = int(digits[0]) if digits else 3
 
-            score = max(1, min(5, score))
-            return {
-                "score": score,
-                "reason": "Fallback parsing - JSON parse failed",
-                "judge_response": judge_response,
-                "justification": "Fallback parsing - JSON parse failed"
-            }
-        
-        # For other tasks, fallback to text matching
-        judge_response_upper = judge_response.strip().upper()
-        is_correct = "CORRECT" in judge_response_upper and "INCORRECT" not in judge_response_upper
-        
-        return {
+        result = {
             "is_correct": is_correct,
+            "extracted_answer": extracted_answer,
             "judge_response": judge_response,
-            "justification": "Fallback parsing - JSON parse failed"
+            "justification": justification,
         }
+
+        # VSP downstream code still expects extracted_vector/extraction_success keys
+        if task_type == "vsp":
+            result["extracted_vector"] = extracted_answer
+            result["extraction_success"] = bool(extracted_answer) and extracted_answer.upper() != "NONE"
+
+        return result
+
+    except (json.JSONDecodeError, AttributeError):
+        # Best-effort fallback: regex-extract the verdict and extracted_answer keys
+        source = json_str if json_str else judge_response
+
+        verdict_match = re.search(
+            r'"verdict"\s*:\s*"(CORRECT|INCORRECT)"', source, re.IGNORECASE
+        )
+        ext_match = re.search(r'"extracted_answer"\s*:\s*"([^"]*)"', source)
+        just_match = re.search(r'"justification"\s*:\s*"([^"]*)"', source)
+
+        verdict = verdict_match.group(1).upper() if verdict_match else ""
+        extracted_answer = ext_match.group(1) if ext_match else ""
+        justification = just_match.group(1) if just_match else "Fallback parsing - JSON parse failed"
+
+        result = {
+            "is_correct": verdict == "CORRECT",
+            "extracted_answer": extracted_answer,
+            "judge_response": judge_response,
+            "justification": justification,
+        }
+        if task_type == "vsp":
+            result["extracted_vector"] = extracted_answer
+            result["extraction_success"] = bool(extracted_answer) and extracted_answer.upper() != "NONE"
+        return result
 
 
 def calculate_vsp_mad(pred_vector: str, gold_vector: str) -> float:
@@ -685,14 +535,8 @@ def evaluate_with_judge(model, tokenizer, dataset, task_type: str,
     detailed_results = []
     mad_scores = []  # For VSP MAD calculation
     extraction_success_count = 0  # For VSP extraction tracking
-    sevenllm_scores = [] # For SEvenLLM numeric scores (1-5) tracking
-    
-    # For ATE metrics (P/R/F1)
-    tp_total = 0
-    fp_total = 0
-    fn_total = 0
-    exact_matches = 0
-    
+
+
     for idx, sample in enumerate(tqdm(dataset, desc=f"Evaluating {task_type.upper()}")):
         # Normalize field names to standard format
         # Priority: Prompt (CTI-Bench) > prompt (SECURE) > question (others)
@@ -743,154 +587,51 @@ def evaluate_with_judge(model, tokenizer, dataset, task_type: str,
             judge_vllm=judge_vllm,
         )
         
-        # Handle VSP (regression) vs other tasks (classification)
+        # Unified: every task uses judge's verdict + extracted_answer.
+        is_correct = judge_result['is_correct']
+        extracted_answer = judge_result.get('extracted_answer', '')
+
+        if is_correct:
+            correct += 1
+        total += 1
+
+        # VSP: also compute MAD as a continuous secondary metric using the extracted vector.
         if task_type == "vsp":
-            # For VSP: extract vector and calculate MAD
-            extracted_vector = judge_result.get('extracted_vector', '')
-            extraction_success = judge_result.get('extraction_success', False)
-            
-            if extraction_success:
+            if extracted_answer and extracted_answer.upper() != "NONE":
                 extraction_success_count += 1
-                # Calculate MAD between extracted and ground truth vectors
-                mad = calculate_vsp_mad(extracted_vector, ground_truth)
-                mad_scores.append(mad)
+                mad = calculate_vsp_mad(extracted_answer, ground_truth)
             else:
-                # Failed extraction gets max penalty
                 mad = 10.0
-                mad_scores.append(mad)
-            
-            total += 1
-            
-            # Save detailed result for VSP
-            if detailed_output is not None:
-                result = {
-                    "index": idx,
-                    "question": question,
-                    "ground_truth": ground_truth,
-                    "model_response": response,
-                    "extracted_vector": extracted_vector,
-                    "judge_response": judge_result['judge_response'],
-                    "mad": mad,
-                    "extraction_success": extraction_success
-                }
-                detailed_results.append(result)
-        else:
-            if task_type == "sevenllm":
-                score = judge_result["score"]
-                sevenllm_scores.append(score)
-                total += 1
-            else:
-                # For classification tasks: count correct/incorrect
-                is_correct = judge_result['is_correct']
+            mad_scores.append(mad)
 
-                if is_correct:
-                    correct += 1
-
-                total += 1
-            
-            # For ATE: extract techniques and calculate precision/recall/F1
-            if task_type == "ate":
-                # parse_judge_response does not return extracted_answer; fall back to raw response
-                judge_answer_text = judge_result.get('extracted_answer') or response
-                pred_techniques = parse_ids_from_text(judge_answer_text)
-                gold_techniques = parse_ids_from_text(ground_truth)
-                
-                tp = len(pred_techniques & gold_techniques)
-                fp = len(pred_techniques - gold_techniques)
-                fn = len(gold_techniques - pred_techniques)
-                
-                tp_total += tp
-                fp_total += fp
-                fn_total += fn
-                
-                if pred_techniques == gold_techniques:
-                    exact_matches += 1
-                
-                if detailed_output is not None:
-                    result = {
-                        "index": idx,
-                        "question": question,
-                        "ground_truth": ground_truth,
-                        "model_response": response,
-                        "pred_techniques": sorted(list(pred_techniques)),
-                        "gold_techniques": sorted(list(gold_techniques)),
-                        "tp": tp,
-                        "fp": fp,
-                        "fn": fn,
-                        "exact_match": pred_techniques == gold_techniques
-                    }
-                    detailed_results.append(result)
-            else:
-                if detailed_output is not None:
-                    result = {
-                        "index": idx,
-                        "question": question,
-                        "ground_truth": ground_truth,
-                        "model_response": response,
-                        "judge_response": judge_result['judge_response'],
-                        "judge_justification": judge_result.get('justification', ''),
-                    }
-
-                    if task_type == "sevenllm":
-                        result["score"] = judge_result["score"]
-                        result["reason"] = judge_result.get("reason", "")
-                    else:
-                        result["is_correct"] = is_correct
-
-                    detailed_results.append(result)
+        if detailed_output is not None:
+            result = {
+                "index": idx,
+                "question": question,
+                "ground_truth": ground_truth,
+                "model_response": response,
+                "extracted_answer": extracted_answer,
+                "judge_response": judge_result['judge_response'],
+                "judge_justification": judge_result.get('justification', ''),
+                "is_correct": is_correct,
+            }
+            if task_type == "vsp":
+                result["mad"] = mad
+            detailed_results.append(result)
     
-    # Calculate metrics based on task type
-    if task_type == "vsp":
-        # VSP uses MAD metric (lower is better)
-        mean_mad = sum(mad_scores) / len(mad_scores) if mad_scores else 10.0
-        # Normalize to accuracy-like metric using denominator 7.7 (Athena standard)
-        vsp_accuracy = max(0.0, 1.0 - (mean_mad / 7.7))
-        
-        results = {
-            "mad": round(mean_mad, 3),
-            "accuracy": round(vsp_accuracy, 3),
-            "total": total,
-            "extraction_success_count": extraction_success_count
-        }
-    elif task_type == "ate":
-        # ATE uses micro-averaged precision/recall/F1
-        precision = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0.0
-        recall = tp_total / (tp_total + fn_total) if (tp_total + fn_total) > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        exact_match_rate = exact_matches / total if total > 0 else 0.0
-        
-        print(f"\nMicro-averaged metrics (ATE):")
-        print(f"Precision: {precision:.4f}")
-        print(f"Recall: {recall:.4f}")
-        print(f"F1 Score: {f1:.4f}")
-        print(f"Exact Match: {exact_match_rate:.4f}")
-        print(f"Total TP/FP/FN: {tp_total}/{fp_total}/{fn_total}")
-        
-        results = {
-            "precision": precision,
-            "recall": recall,
-            "f1": f1,
-            "exact_match": exact_match_rate,
-            "tp_total": tp_total,
-            "fp_total": fp_total,
-            "fn_total": fn_total
-        }
-    elif task_type == "sevenllm":
-        mean_score = sum(sevenllm_scores) / len(sevenllm_scores) if sevenllm_scores else 0.0
-        results = {
-            "mean_score": round(mean_score, 4),
-            "total": total,
-            "score_sum": sum(sevenllm_scores),
-            "scores_collected": len(sevenllm_scores),
-        }
-    else:
-        # Classification tasks use accuracy
-        accuracy = correct / total if total > 0 else 0.0
-        results = {
-            "accuracy": accuracy,
-            "correct": correct,
-            "total": total
-        }
+    # Unified strict-verdict accuracy plus traditional benchmark metrics
+    # (F1 for ATE-family, MAD for VSP-family) computed from extracted_answer.
+    accuracy = correct / total if total > 0 else 0.0
+    results = {
+        "accuracy": accuracy,
+        "correct": correct,
+        "total": total,
+    }
+    tlow = task_type.lower()
+    if tlow in ("ate", "athena_ate"):
+        results.update(compute_ate_metrics(detailed_results, parent_only=True))
+    elif tlow in ("vsp", "athena_vsp"):
+        results.update(compute_vsp_metrics(detailed_results))
     
     # Save detailed results
     if detailed_output is not None:
@@ -928,21 +669,22 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
     detailed_results = []
     mad_scores = []
     extraction_success_count = 0
-    sevenllm_scores = []
-    
-    # For ATE metrics (P/R/F1)
-    tp_total = 0
-    fp_total = 0
-    fn_total = 0
-    exact_matches = 0
-    
-    for idx, sample in enumerate(tqdm(dataset, desc=f"Judging {task_type.upper()}")):
-        # Handle both pre-collected format (prompt/ground_truth) and legacy format (Prompt/GT)
-        question = sample.get('prompt', sample.get('Prompt', ''))
+
+    use_api  = judge_api_kwargs.get('use_api', False)
+    n_workers = judge_api_kwargs.get('n_workers', 20)
+
+    # ── Pass 1: build all judge prompts ───────────────────────────────────────
+    items = []  # list of (idx, question, ground_truth, response, extra_context)
+    judge_prompts = []
+
+    for idx, sample in enumerate(dataset):
+        question     = sample.get('prompt', sample.get('Prompt', ''))
         ground_truth = sample.get('ground_truth', sample.get('GT', ''))
-        response = sample['model_response']
-        
-        # Prepare extra context from metadata
+        response     = sample['model_response']
+        # Strip thinking chain from CoT/reasoning models (e.g. Qwen3, DeepSeek-R1)
+        if '</think>' in response:
+            response = response.split('</think>')[-1].strip()
+
         extra_context = {}
         metadata = sample.get('metadata', {})
         if 'choices' in metadata:
@@ -951,155 +693,121 @@ def evaluate_with_judge_from_responses(dataset, task_type: str,
                 extra_context['choices'] = '\n'.join([f"{k}. {v}" for k, v in sorted(choices.items())])
             elif isinstance(choices, list):
                 extra_context['choices'] = choices
-        
-        # For SEvenLLM: pass input (cybersecurity incident content) for full context
-        if 'input' in metadata:
-            extra_context['input'] = metadata['input']
-        if 'instruction' in metadata:
-            extra_context['instruction'] = metadata['instruction']
-        
-        # Get judge's evaluation
-        judge_result = judge_answer(
-            judge_model, judge_tokenizer, task_type,
-            question, response, ground_truth, extra_context,
-            judge_vllm=judge_vllm,
-            **judge_api_kwargs
-        )
-        
-        # Handle VSP (regression) vs other tasks (classification)
+
+        jp = create_judge_prompt(task_type, question, response, ground_truth, extra_context)
+        items.append((idx, question, ground_truth, response, extra_context))
+        judge_prompts.append(jp)
+
+    # ── Pass 2: generate all judge responses ──────────────────────────────────
+    if judge_vllm:
+        # vLLM: single batch call for entire task
+        print(f"  Batch-judging {len(judge_prompts)} samples via vLLM …")
+        judge_responses = generate_judge_responses_vllm(judge_vllm, judge_prompts, max_tokens=512)
+
+    elif use_api:
+        # API: parallel requests with ThreadPoolExecutor
+        api_ep  = judge_api_kwargs.get('api_endpoint')
+        api_mod = judge_api_kwargs.get('api_model')
+        api_key = judge_api_kwargs.get('api_key', '')
+        api_sty = judge_api_kwargs.get('api_style', 'chat_completions')
+        print(f"  Parallel-judging {len(judge_prompts)} samples via API (workers={n_workers}) …")
+
+        judge_responses = [None] * len(judge_prompts)
+
+        def _call_api(i, prompt):
+            from evaluate import generate_response as _gr
+            return i, _gr(
+                None, None, prompt,
+                use_api=True,
+                api_endpoint=api_ep,
+                api_model=api_mod,
+                api_key=api_key,
+                api_style=api_sty,
+                max_new_tokens=512,
+            )
+
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {pool.submit(_call_api, i, p): i for i, p in enumerate(judge_prompts)}
+            for fut in tqdm(as_completed(futures), total=len(futures),
+                            desc=f"Judging {task_type.upper()} (API)"):
+                i, resp = fut.result()
+                judge_responses[i] = resp
+
+    else:
+        # Local HF inference: sequential
+        judge_responses = []
+        for jp in tqdm(judge_prompts, desc=f"Judging {task_type.upper()}"):
+            from evaluate import generate_response as _gr
+            r = _gr(judge_model, judge_tokenizer, jp, max_new_tokens=512)
+            judge_responses.append(r)
+
+    skipped_count = 0
+
+    # ── Pass 3: score all responses ────────────────────────────────────────────
+    for (idx, question, ground_truth, response, extra_context), judge_raw in zip(items, judge_responses):
+        judge_result = parse_judge_response(judge_raw or "", task_type)
+
+        # Skip samples where the judge API failed (content filter, timeout, etc.)
+        if judge_result.get('skipped'):
+            skipped_count += 1
+            if detailed_output is not None:
+                detailed_results.append({
+                    "index": idx, "question": question, "ground_truth": ground_truth,
+                    "model_response": response, "judge_response": judge_raw,
+                    "judge_justification": judge_result.get('justification', ''),
+                    "is_correct": False, "skipped": True,
+                })
+            continue
+
+        # Unified: every task uses judge's verdict + extracted_answer.
+        is_correct = judge_result['is_correct']
+        extracted_answer = judge_result.get('extracted_answer', '')
+
+        if is_correct:
+            correct += 1
+        total += 1
+
         if task_type == "vsp":
-            extracted_vector = judge_result.get('extracted_vector', '')
-            extraction_success = judge_result.get('extraction_success', False)
-            
-            if extraction_success:
+            if extracted_answer and extracted_answer.upper() != "NONE":
                 extraction_success_count += 1
-                mad = calculate_vsp_mad(extracted_vector, ground_truth)
-                mad_scores.append(mad)
+                mad = calculate_vsp_mad(extracted_answer, ground_truth)
             else:
                 mad = 10.0
-                mad_scores.append(mad)
-            
-            total += 1
-            
-            if detailed_output is not None:
-                result = {
-                    "index": idx,
-                    "question": question,
-                    "ground_truth": ground_truth,
-                    "model_response": response,
-                    "extracted_vector": extracted_vector,
-                    "judge_response": judge_result['judge_response'],
-                    "mad": mad,
-                    "extraction_success": extraction_success
-                }
-                detailed_results.append(result)
-        else:
-            if task_type == "sevenllm":
-                score = judge_result["score"]
-                sevenllm_scores.append(score)
-                total += 1
-            else:
-                is_correct = judge_result['is_correct']
+            mad_scores.append(mad)
 
-                if is_correct:
-                    correct += 1
+        if detailed_output is not None:
+            result = {
+                "index": idx,
+                "question": question,
+                "ground_truth": ground_truth,
+                "model_response": response,
+                "extracted_answer": extracted_answer,
+                "judge_response": judge_result['judge_response'],
+                "judge_justification": judge_result.get('justification', ''),
+                "is_correct": is_correct,
+            }
+            if task_type == "vsp":
+                result["mad"] = mad
+            detailed_results.append(result)
 
-                total += 1
-            
-            # For ATE: extract techniques and calculate precision/recall/F1
-            if task_type == "ate":
-                # parse_judge_response does not return extracted_answer; fall back to raw response
-                judge_answer_text = judge_result.get('extracted_answer') or response
-                pred_techniques = parse_ids_from_text(judge_answer_text)
-                gold_techniques = parse_ids_from_text(ground_truth)
-                
-                tp = len(pred_techniques & gold_techniques)
-                fp = len(pred_techniques - gold_techniques)
-                fn = len(gold_techniques - pred_techniques)
-                
-                tp_total += tp
-                fp_total += fp
-                fn_total += fn
-                
-                if pred_techniques == gold_techniques:
-                    exact_matches += 1
-                
-                if detailed_output is not None:
-                    result = {
-                        "index": idx,
-                        "question": question,
-                        "ground_truth": ground_truth,
-                        "model_response": response,
-                        "pred_techniques": sorted(list(pred_techniques)),
-                        "gold_techniques": sorted(list(gold_techniques)),
-                        "tp": tp,
-                        "fp": fp,
-                        "fn": fn,
-                        "exact_match": pred_techniques == gold_techniques
-                    }
-                    detailed_results.append(result)
-            else:
-                if detailed_output is not None:
-                    result = {
-                        "index": idx,
-                        "question": question,
-                        "ground_truth": ground_truth,
-                        "model_response": response,
-                        "judge_response": judge_result['judge_response'],
-                        "judge_justification": judge_result.get('justification', ''),
-                    }
+    # Unified strict-verdict accuracy plus traditional benchmark metrics
+    # (F1 for ATE-family, MAD for VSP-family) computed from extracted_answer.
+    accuracy = correct / total if total > 0 else 0.0
+    results = {
+        "accuracy": accuracy,
+        "correct": correct,
+        "total": total,
+        "skipped": skipped_count,
+    }
+    tlow = task_type.lower()
+    if tlow in ("ate", "athena_ate"):
+        results.update(compute_ate_metrics(detailed_results, parent_only=True))
+    elif tlow in ("vsp", "athena_vsp"):
+        results.update(compute_vsp_metrics(detailed_results))
 
-                    if task_type == "sevenllm":
-                        result["score"] = judge_result["score"]
-                        result["reason"] = judge_result.get("reason", "")
-                    else:
-                        result["is_correct"] = is_correct
+    if skipped_count:
+        print(f"  ⚠ {skipped_count} samples skipped (judge API failure — excluded from accuracy)")
 
-                    detailed_results.append(result)
-    
-    # Calculate metrics
-    if task_type == "vsp":
-        mean_mad = sum(mad_scores) / len(mad_scores) if mad_scores else 10.0
-        vsp_accuracy = max(0.0, 1.0 - (mean_mad / 7.7))
-        
-        results = {
-            "mad": round(mean_mad, 3),
-            "accuracy": round(vsp_accuracy, 3),
-            "total": total,
-            "extraction_success_count": extraction_success_count
-        }
-    elif task_type == "ate":
-        # ATE uses micro-averaged precision/recall/F1
-        precision = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0.0
-        recall = tp_total / (tp_total + fn_total) if (tp_total + fn_total) > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        exact_match_rate = exact_matches / total if total > 0 else 0.0
-        
-        results = {
-            "precision": precision,
-            "recall": recall,
-            "f1": f1,
-            "exact_match": exact_match_rate,
-            "tp_total": tp_total,
-            "fp_total": fp_total,
-            "fn_total": fn_total
-        }
-    elif task_type == "sevenllm":
-        mean_score = sum(sevenllm_scores) / len(sevenllm_scores) if sevenllm_scores else 0.0
-        results = {
-            "mean_score": round(mean_score, 4),
-            "total": total,
-            "score_sum": sum(sevenllm_scores),
-            "scores_collected": len(sevenllm_scores),
-        }
-    else:
-        accuracy = correct / total if total > 0 else 0.0
-        results = {
-            "accuracy": accuracy,
-            "correct": correct,
-            "total": total
-        }
-    
     # Save detailed results
     if detailed_output is not None:
         with open(detailed_output, 'w') as f:
@@ -1150,6 +858,79 @@ def parse_concatenated_json(content: str) -> List[Dict]:
     return objects
 
 
+# ── Traditional benchmark metric helpers ──────────────────────────────────────
+# These operate on the judge's already-extracted canonical answer strings.
+# No regex extraction here — the judge handled that. We just split/normalize
+# the canonical form (e.g. "T1071,T1083,T1573") and apply benchmark-standard
+# scoring (micro F1 for ATE, MAD for VSP).
+
+def _split_id_set(s: str) -> set:
+    """Split a comma-separated canonical ID list into a normalized set.
+    Handles "NONE", missing values, surrounding whitespace.
+    """
+    if not s or str(s).strip().upper() in ("NONE", ""):
+        return set()
+    return {part.strip().upper() for part in str(s).split(',') if part.strip()}
+
+def _parent_only(id_set: set) -> set:
+    """Strip subtechnique suffix from MITRE technique IDs (T1059.001 → T1059)."""
+    return {tid.split('.')[0] for tid in id_set}
+
+def compute_ate_metrics(records: list, parent_only: bool = True) -> dict:
+    """Micro-averaged precision/recall/F1 + exact-match for ATE-style tasks.
+    Reads `extracted_answer` and `ground_truth` from each record.
+    """
+    tp_total = fp_total = fn_total = 0
+    exact_matches = 0
+    for r in records:
+        if r.get('skipped'):
+            continue
+        pred = _split_id_set(r.get('extracted_answer', ''))
+        gold = _split_id_set(r.get('ground_truth', ''))
+        if parent_only:
+            pred = _parent_only(pred)
+            gold = _parent_only(gold)
+        tp_total += len(pred & gold)
+        fp_total += len(pred - gold)
+        fn_total += len(gold - pred)
+        if pred == gold:
+            exact_matches += 1
+    p = tp_total / (tp_total + fp_total) if (tp_total + fp_total) else 0.0
+    r = tp_total / (tp_total + fn_total) if (tp_total + fn_total) else 0.0
+    f1 = 2 * p * r / (p + r) if (p + r) else 0.0
+    return {
+        "precision": round(p, 4),
+        "recall": round(r, 4),
+        "f1": round(f1, 4),
+        "exact_matches": exact_matches,
+        "tp_total": tp_total,
+        "fp_total": fp_total,
+        "fn_total": fn_total,
+    }
+
+def compute_vsp_metrics(records: list) -> dict:
+    """Mean Absolute Deviation between extracted CVSS vectors and ground truth.
+    Failed extractions ("NONE") get max penalty 10.0.
+    """
+    mads = []
+    extraction_success = 0
+    for r in records:
+        if r.get('skipped'):
+            continue
+        ext = r.get('extracted_answer', '') or ''
+        if ext and ext.upper() != "NONE":
+            mad = calculate_vsp_mad(ext, r.get('ground_truth', ''))
+            extraction_success += 1
+        else:
+            mad = 10.0
+        mads.append(mad)
+    mean_mad = sum(mads) / len(mads) if mads else 10.0
+    return {
+        "mad": round(mean_mad, 3),
+        "extraction_success": extraction_success,
+    }
+
+
 def generate_summary_from_detailed(detailed_dir: str) -> Dict[str, Any]:
     """Generate summary from detailed JSONL results.
     
@@ -1164,57 +945,122 @@ def generate_summary_from_detailed(detailed_dir: str) -> Dict[str, Any]:
         "total_correct": 0,
         "total_samples": 0
     }
-
+    
     # Process each task file
     detailed_path = Path(detailed_dir)
-    sevenllm_task_means = []
-    
     for f in sorted(detailed_path.glob('*_detailed.jsonl')):
         task = f.stem.replace('_detailed', '')
-        content = f.read_text()
-        objects = parse_concatenated_json(content)
+        objects = []
+        with open(f) as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        objects.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
 
         if not objects:
             continue
 
         total = len(objects)
 
-        # SEVENLLM-style scored tasks
-        if all("score" in obj for obj in objects):
-            scores = [obj.get("score", 0) for obj in objects]
-            mean_score = sum(scores) / len(scores) if scores else 0.0
-
+        # Unified path: is_correct is present (set by judge verdict).
+        # We layer traditional benchmark metrics (F1 for ATE, MAD for VSP) on
+        # top of the strict verdict-accuracy, computed from extracted_answer.
+        if 'is_correct' in objects[0]:
+            skipped = sum(1 for o in objects if o.get('skipped'))
+            evaluated = total - skipped
+            correct = sum(1 for o in objects if o.get('is_correct') and not o.get('skipped'))
             task_metrics = {
-                "mean_score": mean_score,
-                "score_sum": sum(scores),
-                "total": total
+                'accuracy': correct / evaluated if evaluated > 0 else 0,  # strict verdict
+                'correct': correct,
+                'total': evaluated,
+                'skipped': skipped,
             }
 
-            summary["tasks"][task.upper()] = task_metrics
-            sevenllm_task_means.append(mean_score)
+            # Traditional metrics from extracted_answer (no regex — judge canonicalized).
+            tlow = task.lower()
+            if tlow in ('ate', 'athena_ate'):
+                task_metrics.update(compute_ate_metrics(objects, parent_only=True))
+            elif tlow in ('vsp', 'athena_vsp'):
+                task_metrics.update(compute_vsp_metrics(objects))
+
+            summary['tasks'][task.upper()] = task_metrics
+            summary['total_correct'] += correct
+            summary['total_samples'] += evaluated
             continue
 
-        # Standard accuracy-style tasks
-        correct = sum(1 for obj in objects if obj.get('is_correct'))
+        # Legacy fallback (pre-unified detailed.jsonl files — kept for backward compat).
+        # VSP: MAD-based regression task — no is_correct field
+        if 'mad' in objects[0]:
+            mad_scores = [obj.get('mad', 10.0) for obj in objects]
+            mean_mad = sum(mad_scores) / len(mad_scores)
+            vsp_accuracy = max(0.0, 1.0 - (mean_mad / 7.7))
+            pseudo_correct = round(vsp_accuracy * total)
+            task_metrics = {
+                'accuracy': round(vsp_accuracy, 4),
+                'correct': pseudo_correct,
+                'total': total,
+                'mean_mad': round(mean_mad, 3),
+                'extraction_success': sum(1 for o in objects if o.get('extraction_success')),
+            }
+            summary['tasks'][task.upper()] = task_metrics
+            summary['total_correct'] += pseudo_correct
+            summary['total_samples'] += total
+            continue
 
+        # Legacy ATE: TP/FP/FN task — use exact_match as is_correct
+        if 'tp' in objects[0]:
+            tp_total = sum(o.get('tp', 0) for o in objects)
+            fp_total = sum(o.get('fp', 0) for o in objects)
+            fn_total = sum(o.get('fn', 0) for o in objects)
+            exact_matches = sum(1 for o in objects if o.get('exact_match'))
+            precision = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0
+            recall = tp_total / (tp_total + fn_total) if (tp_total + fn_total) > 0 else 0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+            task_metrics = {
+                'accuracy': round(f1, 4),
+                'correct': exact_matches,
+                'total': total,
+                'precision': round(precision, 4),
+                'recall': round(recall, 4),
+                'f1': round(f1, 4),
+                'exact_matches': exact_matches,
+            }
+            summary['tasks'][task.upper()] = task_metrics
+            summary['total_correct'] += exact_matches
+            summary['total_samples'] += total
+            continue
+
+        # Final fallback: classification with skipped support
+        skipped = sum(1 for obj in objects if obj.get('skipped'))
+        evaluated = total - skipped
+        correct = sum(1 for obj in objects if obj.get('is_correct') and not obj.get('skipped'))
         task_metrics = {
-            'accuracy': correct / total if total > 0 else 0,
+            'accuracy': correct / evaluated if evaluated > 0 else 0,
             'correct': correct,
-            'total': total
+            'total': evaluated,
+            'skipped': skipped,
         }
+
+        # Add precision/recall/f1 if present
+        if objects and 'precision' in objects[0]:
+            precisions = [obj.get('precision', 0) for obj in objects]
+            recalls = [obj.get('recall', 0) for obj in objects]
+            f1_scores = [obj.get('f1', 0) for obj in objects]
+            task_metrics['avg_precision'] = sum(precisions) / len(precisions) if precisions else 0
+            task_metrics['avg_recall'] = sum(recalls) / len(recalls) if recalls else 0
+            task_metrics['avg_f1'] = sum(f1_scores) / len(f1_scores) if f1_scores else 0
 
         summary['tasks'][task.upper()] = task_metrics
         summary['total_correct'] += correct
         summary['total_samples'] += total
-
-    summary['overall_accuracy'] = (
-        summary['total_correct'] / summary['total_samples']
-        if summary['total_samples'] > 0 else 0
-    )
-
-    if sevenllm_task_means:
-        summary["sevenllm_mean_score"] = sum(sevenllm_task_means) / len(sevenllm_task_means)
-
+    
+    # Calculate overall accuracy
+    summary['overall_accuracy'] = (summary['total_correct'] / summary['total_samples'] 
+                                   if summary['total_samples'] > 0 else 0)
+    
     return summary
 
 
@@ -1257,7 +1103,12 @@ def main():
     parser.add_argument("--judge_api_model", type=str,
                        help="API model name for judge")
     parser.add_argument("--judge_api_key", type=str, default="",
-                       help="Judge API key")
+                       help="Judge API key (defaults to AZURE_API_KEY env var)")
+    parser.add_argument("--n_workers", type=int, default=20,
+                       help="Parallel API worker threads for judging (default: 20)")
+    parser.add_argument("--judge_api_style", type=str, default="chat_completions",
+                       choices=["chat_completions", "azure_responses", "anthropic_messages"],
+                       help="API style for judge: 'chat_completions' (Azure OpenAI), 'azure_responses' (GPT-5.4 Responses API), or 'anthropic_messages' (Azure Anthropic /v1/messages)")
     
     # vLLM options for judge
     parser.add_argument("--judge_use_vllm", action="store_true",
@@ -1328,17 +1179,22 @@ def main():
         )
         judge_model = None
         judge_tokenizer = None
+    elif args.judge_use_api:
+        # Check endpoint/model BEFORE falling through to any other path
+        if not args.judge_api_endpoint or not args.judge_api_model:
+            parser.error(
+                "--judge_use_api requires --judge_api_endpoint and --judge_api_model. "
+                "Both were empty/missing — refusing to silently fall back to a local model. "
+                "Either provide the endpoint/model, or omit --judge_use_api."
+            )
+        judge_model = None
+        judge_tokenizer = None
+        print(f"\nUsing API judge: {args.judge_api_model} at {args.judge_api_endpoint}")
     elif args.judge_model:
         print(f"\nLoading judge model: {args.judge_model}")
         judge_model, judge_tokenizer = load_model_and_tokenizer(
             args.judge_model, args.judge_base_model, False
         )
-    elif args.judge_use_api:
-        if not args.judge_api_endpoint or not args.judge_api_model:
-            parser.error("--judge_api_endpoint and --judge_api_model required")
-        judge_model = None
-        judge_tokenizer = None
-        print(f"\nUsing API judge model: {args.judge_api_model}")
     else:
         # Use same model as judge
         judge_model = model
@@ -1369,11 +1225,19 @@ def main():
         'api_key': args.api_key
     }
     
+    # Pick the right env-var default based on api_style so a stale --judge_api_key
+    # doesn't silently fall back to the wrong key (e.g. OpenAI key for a Claude run).
+    if args.judge_api_style == "anthropic_messages":
+        _default_key = os.getenv("AZURE_CLAUDE_KEY", "")
+    else:
+        _default_key = os.getenv("AZURE_API_KEY", "")
     judge_api_kwargs = {
         'use_api': args.judge_use_api,
         'api_endpoint': args.judge_api_endpoint,
         'api_model': args.judge_api_model,
-        'api_key': args.judge_api_key
+        'api_key': args.judge_api_key or _default_key,
+        'api_style': args.judge_api_style,
+        'n_workers': args.n_workers,
     }
     
     # Load metadata from response directory if available
@@ -1393,6 +1257,7 @@ def main():
         "model_path": response_metadata.get("model_path") or args.model_path,
         "judge_model": args.judge_model or args.judge_api_model or "same",
         "judge_api": args.judge_use_api,
+        "judge_api_style": args.judge_api_style,
         "is_base_model": args.is_base,
         "tasks": {}
     }
@@ -1491,6 +1356,10 @@ def main():
             # Read task_type from first response's metadata if available
             if responses and 'metadata' in responses[0] and 'task_type' in responses[0]['metadata']:
                 judge_task_type = responses[0]['metadata']['task_type']
+                # Normalize known aliases from upstream collectors
+                _aliases = {"secure_mcq": "secure"}
+                if judge_task_type in _aliases:
+                    judge_task_type = _aliases[judge_task_type]
                 print(f"Task type from metadata: {judge_task_type}")
             else:
                 # Fallback to hard-coded mapping for backward compatibility
@@ -1513,12 +1382,21 @@ def main():
                 judge_task_type = judge_task_type_map.get(task_lower, task_lower)
                 print(f"Task type from fallback mapping: {judge_task_type}")
             
-            # Convert to dataset-like format
+            # Convert to dataset-like format. Strip metadata to only the
+            # downstream-consumed `choices` field — sevenllm and other free-form
+            # tasks have heterogeneous nested metadata that pyarrow can't reconcile.
+            def _slim_meta(m):
+                meta = m if isinstance(m, dict) else {}
+                slim = {}
+                if "choices" in meta:
+                    slim["choices"] = meta["choices"]
+                return slim
+
             dataset_dict = {
                 'Prompt': [r.get('prompt', r.get('question', '')) for r in responses],
                 'GT': [r['ground_truth'] for r in responses],
                 'model_response': [r['model_response'] for r in responses],
-                'metadata': [r.get('metadata', {}) for r in responses]
+                'metadata': [_slim_meta(r.get('metadata', {})) for r in responses]
             }
             dataset = HFDataset.from_dict(dataset_dict)
             
@@ -1589,9 +1467,6 @@ def main():
             print(f"  Precision: {task_results['precision']:.4f}")
             print(f"  Recall: {task_results['recall']:.4f}")
             print(f"  F1: {task_results['f1']:.4f}")
-        elif "mean_score" in task_results:
-            print(f"  Mean Score: {task_results['mean_score']:.4f}")
-            print(f"  Total: {task_results['total']}")
         else:
             # Classification tasks
             print(f"  Accuracy: {task_results['accuracy']:.4f}")
