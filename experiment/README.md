@@ -1,6 +1,15 @@
 # Paper Experiments & Visualizations
 
-This directory contains 7 Python scripts that automate the experiments and visualizations needed to complete the paper sections marked as "pending" or "placeholder-driven" in the draft.
+This directory contains paper-oriented experiment and visualization scripts.
+
+## Status (current implementation)
+
+The actively maintained end-to-end implementation (inference → judging → analysis)
+lives under `unified-benchmark-pipeline/`.
+
+This `experiment/` folder is kept primarily for paper reproduction and legacy
+analysis scripts. Some scripts here may reference older entrypoints and may need
+path/flag updates if you run them against the latest pipeline outputs.
 
 ## Pipeline Architecture
 
@@ -8,8 +17,8 @@ This directory contains 7 Python scripts that automate the experiments and visua
 run_all_experiments.py (Master Orchestrator)
     │
     ├─→ 01_full_scale_evaluation.py (Main Evaluation)
-    │       ├─→ run_inference_benchmarks.py (7 models × 21 tasks)
-    │       └─→ run_evaluate_llm_judge.py (LLM judge evaluation)
+  │       ├─→ unified-benchmark-pipeline/run_inference_benchmarks.py (collect responses)
+  │       └─→ unified-benchmark-pipeline/run_evaluate_llm_judge.py (LLM-as-judge)
     │
     ├─→ 02_risys_cluster_analysis.py (uses results from #1)
     ├─→ 03_ate_protocol_analysis.py (uses results from #1)
@@ -34,7 +43,30 @@ The scripts address the incomplete sections in the paper by generating:
 
 ## Quick Start
 
-### Master Orchestrator (Recommended)
+### Recommended: unified pipeline
+
+Use the unified pipeline for collection + judging, and the unified analysis
+modules for post-processing:
+
+```bash
+cd ../unified-benchmark-pipeline
+
+# Collect responses
+python run_inference_benchmarks.py --help
+
+# Judge responses
+python run_evaluate_llm_judge.py --help
+
+# Re-runnable analysis
+cd analysis
+PYTHONPATH=. python -m analysis.results_table
+PYTHONPATH=. python -m analysis.judge_agreement
+PYTHONPATH=. python -m analysis.gold_error_voting
+```
+
+See `unified-benchmark-pipeline/README.md` and `unified-benchmark-pipeline/analysis/README.md` for the authoritative workflow.
+
+### Legacy: master orchestrator (this folder)
 
 **run_all_experiments.py** - Runs all 7 scripts in sequence:
 
@@ -305,7 +337,10 @@ results/
 ### Python Packages
 
 ```bash
-pip install numpy scipy pandas matplotlib seaborn plotly transformers datasets peft tqdm
+pip install -r ../requirements.txt
+
+# Optional: packages used by some legacy plotting/report scripts
+pip install pandas matplotlib seaborn plotly scipy
 ```
 
 ### Optional for faster inference:
@@ -368,17 +403,15 @@ python run_all_experiments.py
 
 ### Out of Memory
 
-```bash
-# Reduce batch size in run_evaluate_llm_judge.py or use smaller judge model
-python 01_full_scale_evaluation.py --batch-size 4 --judge-model "meta-llama/Llama-2-7B-Instruct"
-```
+If you are using the unified pipeline, prefer reducing workload via:
+- fewer tasks / fewer samples (`--max_samples`)
+- vLLM memory controls (see `run_inference_benchmarks.py --help`)
+- choosing a smaller judge model or using an API judge
 
 ### vLLM Errors
 
-```bash
-# vLLM often fails; switch to HuggingFace backend in specific scripts
-# Edit: change judge_backend = "huggingface" in scripts
-```
+If vLLM is unstable on your stack, use HuggingFace transformers (omit `--use_vllm`
+and omit `--judge_use_vllm`) or run the judge via API.
 
 ### Missing Model Weights
 

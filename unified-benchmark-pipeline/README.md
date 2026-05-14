@@ -34,7 +34,7 @@ cd unified-benchmark-pipeline
 
 # 1. Copy and fill in API credentials
 cp .env.example .env
-# edit .env to set AZURE_API_KEY, AZURE_JUDGE_ENDPOINT
+# edit .env to set AZURE_API_KEY, AZURE_ENDPOINT, AZURE_DEPLOYMENT_NAME
 
 # 2. Collect model responses
 python run_inference_benchmarks.py \
@@ -47,8 +47,8 @@ python run_inference_benchmarks.py \
 python run_evaluate_llm_judge.py \
     --response_dir outputs/responses_<MODEL_NAME> \
     --judge_use_api \
-    --judge_api_endpoint "$AZURE_JUDGE_ENDPOINT" \
-    --judge_api_model gpt-5.4 \
+    --judge_api_endpoint "$AZURE_ENDPOINT" \
+    --judge_api_model "$AZURE_DEPLOYMENT_NAME" \
     --output outputs/judge_<MODEL_NAME>/eval_results
 
 # 4. Re-runnable analysis on the judged outputs
