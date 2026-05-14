@@ -1,0 +1,448 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[margin=2cm]{geometry}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{microtype}
+\usepackage[utf8]{inputenc}
+
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black,citecolor=blue!50!black}
+
+\graphicspath{{reports/figures/}}
+
+\title{\textbf{Benchmark Audit Report}\\[2pt]
+\large Per-(model, sub-task) accuracy and majority-voting analysis for suspect gold answers}
+\author{BenchBench analysis pipeline}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report summarises a re-runnable analysis built on top of \texttt{outputs/}, covering 10 instruction-tuned models evaluated on 22 cybersecurity sub-tasks grouped under six parent benchmarks (CTI, ATHENA, SECURE, REDSAGE, CYBERMETRIC, MCQ-standalone). Accuracies are sourced from the unified judge \texttt{summary.json} files in each \texttt{judge\_<model>/} folder. Each summary now reports a \emph{strict-verdict accuracy} (extracted answer == gold, exact match) plus task-specific canonical metrics (precision/recall/F1 for ID-extraction tasks, mean absolute deviation for CVSS vectors). We use the strict accuracy as the unified comparison axis and table the F1 / MAD side-metrics separately for canonical reporting (\S\ref{sec:secondary}). We (i) consolidate per-cell strict accuracies into a single 220-cell table, (ii) flag samples whose gold answer disagrees with a strong cross-model consensus via four voting variants, and (iii) study cross-task correlations to quantify how many distinct capability axes the panel actually covers. At agreement threshold 0.50, 14.8\% of votable samples carry a majority disagreement with the gold answer; 84 samples (0.18\%) are unanimously flagged. PCA on the \mbox{$22\times 10$} accuracy matrix shows that a single principal component captures \textbf{96.8\%} of model-accuracy variance --- 22 sub-tasks effectively span one axis of competence.
+\end{abstract}
+
+\section{Pipeline at a glance}
+
+The pipeline lives under \texttt{analysis/} and is reproducible end-to-end:
+
+\begin{enumerate}
+\item \textbf{\texttt{results\_table.py}} --- builds the master accuracy table. For every \mbox{(model, sub-task)} cell the loader uses, in order: (1)~the default judge's \texttt{summary.json} (containing the unified strict-verdict accuracy plus task-specific F1 / MAD), (2)~mean of per-sample \texttt{is\_correct} from \texttt{*\_detailed.jsonl} as a fallback. All 220 cells are populated; \texttt{results\_table\_meta.csv} records the source label (\texttt{judge\_summary} or \texttt{judge\_detailed}) for each cell. The strict-verdict accuracy in the master table is comparable across all sub-tasks; \S\ref{sec:secondary} reports F1 / MAD where canonical scoring differs from strict match.
+\item \textbf{\texttt{gold\_error\_voting.py}} --- runs majority-voting studies on the 19 \emph{votable} sub-tasks (MCQ, ID-set, CVSS-vector, and the T/F/X labels of \texttt{secure\_kcv}). Free-form text tasks (\texttt{rcm}, \texttt{taa}, \texttt{athena\_rcm}) are out of scope: string-equality voting on long answers is uninformative.
+\item Outputs are CSVs/JSONLs/Markdown under \texttt{analysis/reports/}, plus the figures in this report (\texttt{reports/figures/}).
+\end{enumerate}
+
+\subsection*{Sub-task taxonomy}
+
+\begin{itemize}
+\item \textbf{CTI} (7): \texttt{ate, rcm, vsp, ckt, rms, taa, mcq}
+\item \textbf{ATHENA} (3): \texttt{athena\_ate, athena\_rcm, athena\_vsp}
+\item \textbf{SECURE} (3): \texttt{secure\_maet, secure\_cwet, secure\_kcv}
+\item \textbf{REDSAGE} (5): \texttt{redsage\_frameworks, redsage\_generals, redsage\_skills, redsage\_cli, redsage\_kali}
+\item \textbf{CYBERMETRIC} (1): \texttt{cybermetric}
+\item \textbf{MCQ-Standalone} (3): \texttt{mmlu\_cs, secbench, seceval}
+\end{itemize}
+
+\section{Step 1 -- master accuracy table}
+
+\subsection{Per-cell view}
+
+Figure~\ref{fig:heatmap} plots the per-(model, sub-task) strict-verdict accuracies. The \texttt{viridis} scale runs from 0 to 1, and every cell carries its numerical value. The plot makes a few patterns immediately visible: (i) the SECURE and REDSAGE suites are almost uniformly above 0.75 for every model, suggesting the formats are tractable for instruction-tuned LLMs; (ii) the ID-extraction tasks (\texttt{ate}, \texttt{rms}) and \texttt{taa} look very poor under strict scoring (typically 0.00--0.09 except for GPT-5.4 / Gemma) --- but their \emph{canonical} F1 scores are healthier; e.g.\ \texttt{ate} F1 ranges 0.13--0.76 across models even though the strict-verdict accuracy stays below 0.10 (\S\ref{sec:secondary}); (iii) per-row variance is largest on \texttt{seceval} and \texttt{athena\_ate}, which separate generalist models from smaller security-tuned ones.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{accuracy_heatmap.png}
+\caption{Per-(model, sub-task) strict-verdict accuracy. Every cell sourced from the default judge's \texttt{summary.json}.}
+\label{fig:heatmap}
+\end{figure}
+
+\subsection{Models ranked by mean accuracy}
+
+Averaging strict-verdict accuracy across all 22 sub-tasks gives a coarse ranking (Figure~\ref{fig:per-model-avg}). GPT-5.4 leads ($\bar{a}=0.717$); Gemma-4-31B-it (0.690) and Qwen3.6-35B-A3B (0.662) sit close behind. RedSage-Qwen3-8B-DPO (0.645) and Llama-Primus-Nemotron-70B-Instruct (0.645) cluster mid-table, with Llama-Primus-Merged (0.554) and Foundation-Sec-8B-Instruct (0.579) at the bottom. Note that this ranking averages accuracies of unequal sample sizes and across heterogeneous task types; downstream voting studies use the per-(model, task) accuracies, not this aggregate.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{per_model_average.png}
+\caption{Models ranked by macro-average accuracy across 22 sub-tasks.}
+\label{fig:per-model-avg}
+\end{figure}
+
+\subsection{Secondary metrics for canonical reporting}\label{sec:secondary}
+
+The strict-verdict accuracy in Figure~\ref{fig:heatmap} is the unified comparison axis used throughout this report --- it is comparable across all 22 sub-tasks and is what every voting / correlation analysis below consumes. Two task families are not adequately scored by exact match alone, however:
+
+\begin{itemize}
+\item \textbf{ID-extraction (ATE, ATHENA\_ATE)}: predictions are \emph{sets} of MITRE technique IDs. A model that recovers 9/10 IDs is much closer to correct than one that recovers 0; the canonical metric is set-overlap F1.
+\item \textbf{CVSS-vector scoring (VSP, ATHENA\_VSP)}: predictions are 8-component vectors. The canonical metric is mean absolute deviation (MAD) of CVSS base scores; lower is better.
+\end{itemize}
+
+Under strict scoring, e.g.\ \texttt{ate} accuracies range 0.00--0.09; the corresponding F1 scores in Table~1 of \texttt{secondary\_metrics.md} range 0.13--0.76, with GPT-5.4 at F1=0.71 and Gemma-4-31B-it at F1=0.76. \texttt{vsp} strict accuracy peaks at 0.49 (GPT-5.4); the same model has mean MAD of 1.02. The full canonical-metrics table is in \texttt{analysis/reports/secondary\_metrics.csv} and \texttt{secondary\_metrics.md}; we keep the body of the report on the strict scale because it is the only scale that lets us compare ATE alongside MCQ in the same heatmap, voting study, and correlation analysis.
+
+\section{Step 2 -- flagging suspect gold answers}
+
+For each votable sub-task we extract a normalised prediction per (model, sample), majority-vote across all available models, and \emph{flag} a sample when the most popular non-null prediction differs from the gold answer with at least $X\%$ agreement. The remainder of this section sweeps four orthogonal definitions of ``$X\%$ agreement.''
+
+\subsection{Plain unweighted threshold sweep}
+
+Across all 19 votable sub-tasks (45{,}468 samples), the relationship between agreement threshold and number of flagged samples is monotone, as expected (Figure~\ref{fig:thresh-total}). At a permissive 0.30 cut-off, 29\% of samples have a majority that disagrees with the gold; the cut at 0.50 isolates 14.8\%; the cut at 0.667 drops to 2.0\%; at unanimous agreement (all available models flag the same alternative answer) only 84 samples remain --- those are the highest-confidence candidates for a mislabelled gold answer.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\textwidth]{threshold_total.png}
+\caption{Total flagged samples (across all sub-tasks) as a function of agreement-fraction threshold.}
+\label{fig:thresh-total}
+\end{figure}
+
+The per-task curve (Figure~\ref{fig:thresh-sweep}) shows where the flagging happens. \texttt{secure\_kcv} sits very high across every threshold --- almost half of its samples retain a strong consensus disagreement even at threshold 1.00 --- which we treat as a methodological flag rather than a gold-quality signal: the task uses three-way T/F/X labels with very imbalanced gold distribution, and most models default to ``T'' or ``F'' even when the rubric expects ``X''. The \texttt{seceval} curve is similarly elevated and persists at unanimous agreement (71 samples), mostly driven by a small set of poorly performing models pulling each other.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{threshold_sweep.png}
+\caption{Per-sub-task fraction of samples flagged as the agreement threshold tightens (\texttt{symlog} y-axis).}
+\label{fig:thresh-sweep}
+\end{figure}
+
+\paragraph{Top sub-tasks by flag rate at threshold 0.50.} The five sub-tasks with the highest fraction of disagreement-with-gold at 50\% agreement are \texttt{athena\_ate} (36.0\%), \texttt{mmlu\_cs} (36.0\%), \texttt{seceval} (30.5\%), \texttt{ckt} (22.4\%), and \texttt{redsage\_skills} (17.2\%). The cleanest sub-tasks are \texttt{ate} (1.8\%), \texttt{secure\_cwet} (2.3\%) and \texttt{cybermetric} (2.4\%). Mid-level fractions on \texttt{mmlu\_cs} are partly an artefact of the small N (100) --- a single bad gold flips a percentage point.
+
+\subsection{Rank-weighted majority}
+
+Plain voting treats every model as equally informative. The two rank-weighted schemes give heavier weight to models that are accurate on the sub-task in question:
+\begin{align*}
+w_i^{\text{linear}} &= \frac{N - r_i + 1}{N}, &
+w_i^{\text{harmonic}} &= \frac{1}{r_i},
+\end{align*}
+where $r_i$ is the model's accuracy rank on this sub-task (rank 1 = highest accuracy from Step 1) and $N$ is the number of models with predictions. A sample is flagged when the weighted majority's weight share exceeds 0.50. Figure~\ref{fig:weighted} compares the three at the same 0.50 threshold.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{weighted_comparison.png}
+\caption{Plain unweighted voting vs.\ linear-weighted vs.\ harmonic-weighted at threshold 0.50.}
+\label{fig:weighted}
+\end{figure}
+
+In most sub-tasks the weighted variants flag noticeably fewer samples than the plain count: the linear scheme cuts \texttt{ckt} from 22.4\% to 28\%-of-plain, and \texttt{mmlu\_cs} from 36\% to 18\%. That is the expected behaviour --- weighting suppresses low-accuracy models that would otherwise stack up against the gold. The harmonic scheme is more aggressive (it concentrates almost all weight on the top one or two models) and consequently finds more flags than linear on hard tasks like \texttt{vsp} and \texttt{athena\_ate}, where the top model often disagrees with everyone else.
+
+\subsection{Top-$k$ by rank}
+
+The top-$k$ experiment keeps only the $k$ best-performing models on the sub-task and re-runs plain majority at threshold 0.50. Figure~\ref{fig:topk} shows the percentage of samples flagged for $k\in\{1,\ldots,10\}$. At $k=1$ we are simply asking ``where does the single best model disagree with gold,'' which is the \emph{model error rate} rather than a gold-error signal --- those columns are useful as a sanity check (e.g., $k=1$ on \texttt{vsp} is 70\% because the top model still has only 0.82 accuracy). The interesting columns are at intermediate $k$, where consensus among a small expert pool is most informative; flag rates drop sharply between $k=2$ and $k=3$ on tasks like \texttt{ckt} and \texttt{seceval} and stabilise near $k=5$, suggesting a panel of the top three to five models gives the cleanest signal.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{topk_heatmap.png}
+\caption{Top-$k$ voting --- \% of samples flagged when only the $k$ highest-accuracy models on the sub-task vote (threshold 0.50).}
+\label{fig:topk}
+\end{figure}
+
+\subsection{Acceptance-cutoff filter}
+
+The acceptance variant lets only models with sub-task accuracy $\geq \alpha \cdot a^\star$ vote, where $a^\star$ is the best-model accuracy on that sub-task. This makes the cutoff benchmark-relative --- a 90\%-of-best bar is harder to clear on a saturated task (\texttt{secure\_maet}, $a^\star=0.93$, cutoff $=0.84$) than on a hard task (\texttt{ate}, $a^\star=0.09$, cutoff $=0.08$). When fewer than 3 models clear the bar we mark the cell as ``n/a'' and exclude it from voting. Figure~\ref{fig:acceptance} reports the resulting flag rate.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{acceptance_heatmap.png}
+\caption{Acceptance-cutoff voting --- \% of samples flagged when only models with accuracy $\geq \alpha \cdot \text{best}$ vote, threshold 0.50. ``n/a'' marks (sub-task, $\alpha$) pairs where fewer than 3 models clear the bar.}
+\label{fig:acceptance}
+\end{figure}
+
+The ``n/a'' regions concentrate on hard sub-tasks (\texttt{ate}, \texttt{rms}, \texttt{athena\_ate}) and at the strictest cutoff ($\alpha=0.9$) a handful of additional sub-tasks fall out: when even the second-best model is more than 10\% below the best, the panel collapses. Figure~\ref{fig:eligible} reports the panel size at each cutoff.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\textwidth]{eligible_count.png}
+\caption{Number of models eligible to vote at each acceptance cutoff. The ceiling is 10 (number of models in the study). Sub-tasks with cell value $<3$ become ``n/a'' in Figure~\ref{fig:acceptance}.}
+\label{fig:eligible}
+\end{figure}
+
+\section{Putting it together}
+
+A pragmatic recipe for triaging suspect gold answers --- in the spirit of the original prompt --- is to combine the four signals:
+
+\begin{enumerate}
+\item Start from the unanimous-agreement set (threshold 1.00, 84 samples). These are the highest-precision candidates for human review.
+\item Add the harmonic-weighted-disagreement set restricted to tasks where the acceptance panel has at least three eligible models (i.e.\ exclude \texttt{ate}, \texttt{rms}, \texttt{athena\_ate} as voting-impractical). This brings in samples where a small expert pool agrees against the gold.
+\item Cross-check with top-$k$ at $k{=}3$: samples flagged \emph{only} at $k\geq 6$ are likely populist majorities driven by weak models.
+\end{enumerate}
+
+The intersection of those three filters typically yields a few hundred samples per study, which is feasible for a manual audit. The full per-task flagged JSONLs (\texttt{analysis/reports/\{gold\_errors,weighted\_rank,topk,acceptance\}/flagged/}) include the question snippet, gold answer, all model predictions, and the agreement summary so a reviewer can see at a glance \emph{why} a sample is flagged.
+
+\section{Caveats and follow-ups}
+
+\begin{itemize}
+\item The accuracy figures are sourced from the unified \texttt{judge\_<model>/eval\_results/summary.json}, using the strict-verdict accuracy field. Each summary also carries canonical metrics (precision/recall/F1 for ID-extraction; mean MAD for CVSS); we surface those in \S\ref{sec:secondary} but do not feed them into the voting or correlation analyses to keep the comparison axis uniform.
+\item For \texttt{secure\_kcv} (T/F/X labels) we added an explicit extractor; without it, every sample's gold normalises to the empty string and the flag rate is artificially $\sim$80\%. Other label spaces (free-form CVE IDs, structured JSON) are still out of scope.
+\item Free-form sub-tasks (\texttt{rcm}, \texttt{taa}, \texttt{athena\_rcm}) are skipped by the voting study by design; flagging them needs an LLM-based equivalence judge, not string equality. They \emph{are} included in the correlation analysis through their accuracies.
+\item The PCA result (PC1 = 96.8\%) is amplified by the strict-verdict scoring: many tasks now have low-variance accuracy distributions (e.g.\ \texttt{ate} where almost every model scores 0.00--0.09), and standardisation propagates that low-variance signal into the dominant component. PCA on the F1 / MAD metrics would yield a less extreme (but still single-axis) story; the qualitative conclusion does not change.
+\item Bootstrap CIs at $n=10$ models remain wide; specific-pair claims should be hedged.
+\end{itemize}
+
+\section{Verifying the flagged samples}\label{sec:verify}
+
+The four voting variants in \S3 give us \emph{candidate} mislabels, not confirmed ones. To turn the candidate list into actionable conclusions we run two independent verifiers over the high-confidence flags:
+
+\begin{itemize}
+\item \textbf{Search-grounded agent}: GPT-5.4 via the Azure Responses API with the built-in \texttt{web\_search\_preview} tool. The system prompt restricts citations to a tiered cybersec whitelist (Tier 1: MITRE ATT\&CK / CVE / CWE / CAPEC, NIST NVD / CSRC, CISA, IANA, IETF RFCs, FIRST.org, OWASP; Tier 2: vendor security advisories, Kali docs, PCI). Verdicts whose citations fall below Tier 2 are demoted to \texttt{uncertain}.
+\item \textbf{Direct agent}: GPT-5.4 via Azure chat completions, no tools. The same prompt minus the search instruction.
+\end{itemize}
+
+Each verifier emits \texttt{gold\_correct} (the flag was a false positive: gold was right, models were wrong together), \texttt{majority\_correct} (the flag was a true positive: gold is mislabelled), \texttt{both\_wrong} (neither answer is correct), or \texttt{uncertain}. Results are cached per \mbox{(task, sample)} so threshold sweeps reuse work: the unanimous-agreement set (84 samples) is verified first, then 0.90 (122), 0.833 (130), and finally 0.75 (405).
+
+\subsection{Per-threshold false-positive rate}
+
+Figure~\ref{fig:fp-vs-threshold} plots, for each agent, the share of verified flags where the verifier sided with the gold (i.e.\ confirmed the flag was a false positive). The cumulative-verdict-breakdown is in Figure~\ref{fig:verdict-breakdown}; raw counts are in \texttt{per\_threshold\_search.csv} and \texttt{per\_threshold\_direct.csv}, and a written summary in \texttt{verification/summary.md}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{fp_vs_threshold.png}
+\caption{Verifier-confirmed false-positive rate of gold-error flags as the agreement threshold relaxes from 1.00 to 0.75. Numbers next to each point are \emph{verified / flagged} counts.}
+\label{fig:fp-vs-threshold}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{verdict_breakdown.png}
+\caption{Verdict breakdown per threshold for each verifier. \texttt{gold\_correct} = flag was a false positive; \texttt{majority\_correct} = flag was a true positive (gold is mislabelled); \texttt{both\_wrong} = neither answer is correct; \texttt{uncertain} = grounding insufficient. Hatched white = pending samples not yet verified.}
+\label{fig:verdict-breakdown}
+\end{figure}
+
+\subsection{Search vs.\ direct agreement}
+
+The two agents make independent calls; comparing their verdicts gives an honest signal on which calls are robust vs.\ depend on grounding. Figure~\ref{fig:agent-agreement} shows the confusion matrix over commonly-verified samples. Disagreement samples are listed in \texttt{verification/disagreement\_samples.jsonl}; these are the highest-priority items for human review --- the search agent has cited evidence, the direct agent has model-prior-only judgment, and they pulled in different directions.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\textwidth]{agent_agreement.png}
+\caption{Search-vs-direct verdict agreement. The diagonal is identical-verdict count.}
+\label{fig:agent-agreement}
+\end{figure}
+
+\subsection{What this tells us about the original threshold sweep}
+
+Combining the verification signal with the agreement-fraction sweep refines the conclusions of \S3:
+
+\begin{itemize}
+\item At threshold 1.00 (84 samples) the verifier-confirmed FP rate gives the cleanest \emph{lower bound on true mislabels}: $1 - \text{FP-rate}_{1.00}$ approximates the fraction of unanimously-flagged samples whose gold really is wrong. That is the recommended dataset-cleaning prior --- multiply 84 by that ratio to estimate the true mislabel count at the unanimous tier.
+\item As the threshold relaxes, FP rate rises monotonically (more borderline flags). The 0.75 cut-off is the practical edge of useful triage: below it, the FP rate dwarfs the TP rate.
+\item The search agent's \texttt{uncertain} rate is informative on its own --- it identifies samples where authoritative sources do not exist (often custom datasets like REDSAGE-internal or paraphrased CTI) and where dataset-quality questions are inherently hard to settle by external grounding.
+\end{itemize}
+
+\section{Cross-task correlation analysis}
+
+The four voting studies above tell us where each individual benchmark disagrees with its gold answer. They do not yet tell us whether the 22 sub-tasks are \emph{measuring different things} --- if two sub-tasks rank our 10 models the same way, running both is redundant. This section quantifies that redundancy.
+
+\subsection{Method}
+
+We treat each sub-task as a 10-dimensional vector of model accuracies (one entry per model) and study the 22-by-22 matrix of pairwise correlations. With $n=10$ we use:
+
+\begin{itemize}
+\item \textbf{Kendall $\tau$-b} as the primary statistic --- robust to outliers and to the heavy tails we see on free-form sub-tasks. Spearman $\rho$ and Pearson $r$ are computed alongside (\texttt{pairwise\_kendall.csv}, \texttt{pairwise\_spearman.csv}, \texttt{pairwise\_pearson.csv}) for triangulation.
+\item \textbf{Bootstrap 95\% CIs} for every $\tau$ --- 300 resamples of the 10 models with replacement; with $n=10$ the CIs are wide and any conclusion that ignores them is overconfident.
+\item \textbf{Hierarchical clustering} on $1-\tau$ (signed; we want positively-covarying tasks to cluster) with average linkage. The dendrogram is in Figure~\ref{fig:dendrogram}.
+\item \textbf{PCA + Horn's parallel analysis} on the standardised $22\times 10$ matrix to estimate the effective number of independent benchmarks (Figure~\ref{fig:scree}).
+\item \textbf{Partial Kendall} controlling for the parent-benchmark mean (\texttt{partial\_kendall.csv}): does an across-parent pair still correlate after we account for the parent-level signal?
+\end{itemize}
+
+\subsection{Pairwise correlation structure}
+
+Figure~\ref{fig:kendallheat} shows the $\tau$ matrix reordered by the cluster-leaves order. The signal is dominated by a large positive block: most security-knowledge sub-tasks correlate at $\tau\in[0.4, 0.9]$, with REDSAGE / SECURE / standalone-MCQ tightly entangled. A second smaller block (\texttt{rcm}, \texttt{athena\_rcm}, \texttt{seceval}) is moderately correlated with the rest. Two sub-tasks behave \emph{anti-correlated} with most of the panel: \texttt{secure\_kcv} (T/F/X labels) and \texttt{taa} (free-form threat-actor attribution) push down the bottom-right cells of the heatmap.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.93\textwidth]{kendall_heatmap_clustered.png}
+\caption{Pairwise Kendall $\tau$ between sub-tasks, ordered by hierarchical clustering. Red = positive co-variation, blue = anti-correlation, white = independent.}
+\label{fig:kendallheat}
+\end{figure}
+
+The 15 highest-$\tau$ pairs (Figure~\ref{fig:toppairs}) include \emph{some} same-parent pairs (\texttt{secure\_maet}~vs~\texttt{secure\_cwet}, $\tau=0.91$) but several cross-parent pairs are equally tight: \texttt{redsage\_skills}~vs~\texttt{secbench} sits at $\tau=0.91$, and three different SECURE / REDSAGE pairs reach $\tau=0.87$. The bootstrap CIs are wide --- e.g. \texttt{secure\_cwet}~vs~\texttt{redsage\_frameworks}: $\tau=0.87$, CI $[0.44, 0.93]$ --- so we report no pair clearing the high bar of $\tau>0.85$ \emph{with} CI lower bound $>0.70$. The signal is real but $n=10$ does not let us claim near-certainty about specific pairs.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{top_correlated_pairs.png}
+\caption{Top 15 highest-$\tau$ sub-task pairs, with bootstrap 95\% confidence intervals. CIs widen visibly for the highest correlations, reflecting the small $n=10$.}
+\label{fig:toppairs}
+\end{figure}
+
+\subsection{Within vs across parent benchmark}
+
+A natural question is whether parent-benchmark labels carve out the right partition. They do not, cleanly. The mean within-parent $\tau$ is 0.48 (median 0.55) while the mean across-parent $\tau$ is 0.44 (median 0.47) --- a difference of less than one bootstrap CI width (Figure~\ref{fig:wva}). In other words, the parent labels (CTI / ATHENA / SECURE / REDSAGE / etc.) do not reliably predict which sub-tasks tell the same story. Some same-parent sub-tasks are highly correlated (REDSAGE\_*); others are not (CTI\_ate vs CTI\_taa). Under the new strict-verdict accuracies the overall correlation level rose noticeably (vs.\ the previous F1-derived numbers): cross-task agreement is the rule rather than the exception when models are scored on the same uniform criterion.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{within_vs_across_parent.png}
+\caption{Distribution of pairwise $\tau$ for within-parent (40 pairs) and across-parent (191 pairs) sub-task pairs.}
+\label{fig:wva}
+\end{figure}
+
+\subsection{Hierarchical clustering and effective groups}
+
+Cutting the dendrogram at $k=5$ partitions the 22 sub-tasks into:
+
+\begin{itemize}
+\item \textbf{Big knowledge cluster (15 sub-tasks)}: \texttt{ate, vsp, ckt, mcq, athena\_vsp, secure\_maet, secure\_cwet, redsage\_frameworks, redsage\_generals, redsage\_skills, redsage\_cli, redsage\_kali, mmlu\_cs, secbench, seceval}. Almost every multiple-choice / structured-prediction sub-task lands here. These all rank the 10 models the same way and therefore form one effective benchmark from a discriminative standpoint.
+\item \textbf{Hard-extraction cluster (2)}: \texttt{rms, taa}. Where almost every model fails badly, the ranking is essentially noise.
+\item \textbf{Reasoning cluster (3)}: \texttt{rcm, athena\_ate, athena\_rcm}. Free-form / long-context tasks that pattern together.
+\item \textbf{Singleton}: \texttt{cybermetric}. CYBERMETRIC ranks models in a way that no other sub-task replicates --- worth retaining.
+\item \textbf{Singleton}: \texttt{secure\_kcv}. The T/F/X label space is unique enough that no other sub-task ranks models the same way.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{dendrogram.png}
+\caption{Hierarchical clustering of the 22 sub-tasks (average linkage on $1-\tau$ distance). The dotted height indicates the $k=5$ cut.}
+\label{fig:dendrogram}
+\end{figure}
+
+\subsection{PCA and effective dimensionality}
+
+The PCA on the standardised $22\times 10$ matrix tells the diversity story most starkly: \textbf{PC1 explains 96.8\% of variance} on its own; PC2 adds 1.3\%; PC3 adds 0.9\%. The cumulative-variance curve already crosses 90\% at PC1, and 99\% by PC3. Horn's parallel analysis (95th-percentile null eigenvalues from random matrices of the same shape) confirms that only PC1 exceeds the null threshold (Figure~\ref{fig:scree}, left panel) --- i.e.\ \emph{statistically there is exactly one dominant axis of model ability across these 22 sub-tasks under strict-verdict scoring}, with everything else either chance-level or near it.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{pca_scree.png}
+\caption{PCA scree (left) compared to a parallel-analysis null distribution; cumulative variance (right). PC1 captures 96.8\% of model-accuracy variance, far above the null 95th percentile of 26.5\%.}
+\label{fig:scree}
+\end{figure}
+
+The biplot (Figure~\ref{fig:biplot}) projects every sub-task onto PC1 and PC2. PC1 ordering reflects general security competence (the more a sub-task loads on PC1, the more strongly it ranks the same models we already know are best). The interesting tasks for diversity are those that load on \emph{PC2 or beyond} --- \texttt{secure\_kcv}, \texttt{taa}, and \texttt{rms} sit far from the dense knowledge cluster, suggesting they exercise capabilities the other 19 do not capture.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{pca_biplot.png}
+\caption{PCA projection of sub-tasks onto PC1$\times$PC2, coloured by hierarchical-cluster membership at $k=5$.}
+\label{fig:biplot}
+\end{figure}
+
+\subsection{Implications for benchmark selection}
+
+The headline finding: \textbf{22 cybersecurity sub-tasks span effectively one dominant axis of model competence (PC1, 96.8\%)} under the strict-verdict accuracy. Adding more REDSAGE-style, SECURE-style, or MCQ-style sub-tasks does not add discriminative information --- the bulk of the panel agrees on which models are good. To cover capabilities not measured by that dominant axis, the panel should over-sample the outliers in PC2 and beyond:
+
+\begin{itemize}
+\item \textbf{\texttt{secure\_kcv}} (singleton, anti-correlated with most): explicit T/F/X disambiguation under noisy gold patterns.
+\item \textbf{\texttt{cybermetric}} (singleton): also separates models in a way that no other MCQ task replicates.
+\item \textbf{\texttt{taa, rms}}: hard ID-extraction / attribution where current models all fail; useful for \emph{negative} discrimination if scaled-up models start clearing the bar.
+\item \textbf{\texttt{rcm, athena\_rcm, athena\_ate}}: free-form / long-context reasoning cluster; meaningfully different from short-form formats.
+\item \textbf{One MCQ-saturated task} from the big knowledge cluster: cheap, high-quality gold, useful as a stable anchor.
+\end{itemize}
+
+We argue against running every sub-task in REDSAGE / SECURE / etc.\ as separate benchmarks: one task per parent suffices for ranking purposes, and budget should instead be spent on capability axes the current panel does not cover (e.g.\ adversarial prompt-injection, multi-step exploitation, real-world pentesting traces).
+
+\paragraph{Caveats.} (i) $n=10$ models is a small sample for stable correlations; bootstrap CIs are wide and conclusions about specific pairs should be hedged. (ii) The PCA stretches the dominant-component finding by standardising rows --- without standardisation PC1 captures even more variance, but is dominated by sub-tasks with high accuracy spread. (iii) The single-axis conclusion holds for \emph{model ranking}, not for absolute capability measurement; a model that scores 0.92 on REDSAGE and 0.18 on \texttt{rms} is exhibiting two different behaviours that PC1 collapses into a single ``ability'' number.
+
+\section{Embedding-based content correlation}\label{sec:embed}
+
+The §4 correlation analysis measures \emph{how similarly the 22 sub-tasks rank our 10 models} — an accuracy-based view. This section adds an orthogonal lens: \emph{how similar are the questions themselves across sub-tasks?} Two benchmarks may rank models the same way for two very different reasons: (1) they ask substantively similar questions (content overlap → "redundant"), or (2) they tap a generic capability axis that all easy/hard models share regardless of content (diversifying \emph{content} can still produce aligned rankings). Distinguishing these is the diversity argument's missing ingredient.
+
+\subsection{Method}
+
+We embed every benchmark question with \texttt{BAAI/bge-base-en-v1.5} (768-dim, MIT license, top of MTEB for its size class) on a single GPU. All 48{,}563 questions across the 22 sub-tasks are embedded once. Question text is the model-invariant \texttt{prompt} field from \texttt{outputs/responses\_GPT-5.4/<task>\_responses.jsonl}; per-task scaffolding (e.g.\ \emph{"Choose the correct answer (A, B, C, or D) only..."}) is regex-stripped before encoding so it doesn't dominate the embedding for short MCQ items.
+
+Two derived analyses:
+
+\begin{itemize}
+\item \textbf{Centroid similarity.} For each sub-task we compute the L2-normalised mean embedding (centroid) and build the 22$\times$22 matrix of cosine similarities between centroids. We compare this matrix against the §4 Kendall-$\tau$ matrix via a Mantel-style permutation test (1000 permutations) — does semantic similarity predict accuracy-rank similarity?
+\item \textbf{Per-question clustering with EVoC.} The Tutte Institute's \href{https://github.com/TutteInstitute/evoc}{EVoC} runs density-based clustering over the full $48{,}563\times 768$ matrix (\texttt{min\_cluster\_size}=30). For each cluster we record dominant sub-task, purity, and the share each contributing sub-task takes. Clusters with low purity ($<\!0.7$) and at least three meaningfully-contributing sub-tasks are content-overlap clusters. From the clustering we also derive a 22$\times$22 \emph{shared-cluster ratio}: for each pair $(a, b)$, the fraction of $a$'s questions in clusters that also contain $\geq 10\%$ of $b$'s questions.
+\end{itemize}
+
+\subsection{Centroid similarity}
+
+Figure~\ref{fig:centroid-heatmap} shows the centroid cosine matrix, ordered by the §4 hierarchical-cluster leaf order so it can be read alongside the Kendall-$\tau$ heatmap (Figure~\ref{fig:kendallheat}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{centroid_similarity_heatmap.png}
+\caption{Per-sub-task centroid cosine similarity (BAAI/bge-base-en-v1.5). Ordered by §4's hierarchical-clustering leaf order for direct comparison with Figure~\ref{fig:kendallheat}.}
+\label{fig:centroid-heatmap}
+\end{figure}
+
+\subsection{Semantic vs.\ accuracy-rank: the 4-quadrant picture}
+
+Figure~\ref{fig:sem-acc-scatter} plots one point per sub-task pair: $x$ = centroid similarity, $y$ = Kendall $\tau$. We label four quadrants using thresholds $\text{sim} \geq 0.85$ and $|\tau| \geq 0.5$:
+
+\begin{itemize}
+\item \textbf{redundant} (top-right): high semantic AND high $\tau$. These pairs ask similar questions \emph{and} produce similar rankings — strong candidates for de-duplication. Typical: REDSAGE sub-tasks among themselves.
+\item \textbf{general-axis-only} (top-left): low semantic, high $\tau$. Different content but the same general-capability axis dominates ranking. These pairs argue \emph{for} keeping both: the rank agreement is incidental, not informative about content.
+\item \textbf{format-quirk} (bottom-right): high semantic, low $\tau$. Semantically similar but rank models differently — usually a format-handling artefact (e.g.\ T/F/X labels in \texttt{secure\_kcv} produce different model-error patterns even for paraphrases of MCQ questions).
+\item \textbf{diversifying} (bottom-left): low semantic AND low $\tau$. Genuinely complementary — the most valuable pairs to keep when curating a benchmark suite.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{semantic_vs_accuracy_scatter.png}
+\caption{Semantic vs accuracy-rank similarity for all 231 sub-task pairs. Quadrant thresholds: $\text{sim}=0.85$, $|\tau|=0.5$. The Mantel-test correlation between the two matrices is annotated.}
+\label{fig:sem-acc-scatter}
+\end{figure}
+
+The Mantel-style correlation between the centroid-similarity matrix and the Kendall-$\tau$ matrix tells us whether semantics predict ranking. A high positive correlation supports a "content drives ranking" reading; a low correlation says the dominant-PC1 capability axis explains rankings independently of content.
+
+\subsection{EVoC content clusters}
+
+Figure~\ref{fig:evoc-size} shows the cluster-size distribution and Figure~\ref{fig:evoc-comp} the composition of the largest clusters. A cluster dominated by a single sub-task is unique content; a cluster mixing several sub-tasks is content overlap.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{evoc_size_distribution.png}
+\caption{EVoC cluster size distribution (log scale).}
+\label{fig:evoc-size}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{cluster_task_composition.png}
+\caption{Source-sub-task composition of the top-40 EVoC clusters. Each bar is one cluster; each colour is one sub-task. Tall single-colour bars mean a sub-task has its own cluster; mixed bars indicate cross-task content overlap.}
+\label{fig:evoc-comp}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{task_overlap_heatmap.png}
+\caption{Asymmetric shared-cluster ratio (rows are A, columns are B): fraction of A's questions in clusters that also contain $\geq 10\%$ of B. Ordering matches Figure~\ref{fig:centroid-heatmap}.}
+\label{fig:task-overlap}
+\end{figure}
+
+The full ranked list of the top-30 most-overlapping pairs is at \texttt{analysis/reports/embeddings/overlap\_pairs.md}.
+
+\subsection{Implications for the diversity argument}
+
+Combining §4 (accuracy-rank correlation) and §5 (semantic correlation) refines the §4 conclusion. The §4 finding was that one principal component captures 96.8\% of model-accuracy variance — a strong "single axis" claim. §5 sharpens it:
+
+\begin{itemize}
+\item Pairs in the \textbf{redundant} quadrant are the only ones for which dropping one of the two costs nothing: same content, same ranking.
+\item Pairs in \textbf{general-axis-only} are \emph{not} redundant despite agreeing on rankings, because the agreement is the PC1 capability axis at work, not the questions. Keeping both still measures the same axis, but at the cost of suite-curation budget; the alternative is to keep just one and use it as a stable PC1 anchor.
+\item Pairs in \textbf{diversifying} are the irreplaceable ones — different content, different rankings. The benchmark suite gains discriminative power per task only by including more of these.
+\end{itemize}
+
+The single-axis result from §4 holds for \emph{model ranking}, not for \emph{capability measurement}. Pairs in the high-semantic / low-$\tau$ quadrant are the cleanest evidence: same content, different ranking implies that even within one content area we need multiple test items to localise model failures rather than just rank models.
+
+\section*{Reproducing this report}
+
+\begin{verbatim}
+cd BenchmarkingSecBenchmarks
+PYTHONPATH=. python3 -m analysis.results_table
+PYTHONPATH=. python3 -m analysis.secondary_metrics
+PYTHONPATH=. python3 -m analysis.gold_error_voting
+PYTHONPATH=. <conda-python> -m analysis.correlation --stage pairwise
+PYTHONPATH=. <conda-python> -m analysis.correlation --stage bootstrap   # rerun until 231/231
+PYTHONPATH=. <conda-python> -m analysis.correlation --stage postprocess
+PYTHONPATH=. python3 -m analysis.build_verification_bank
+sbatch --export=ALL,AGENT=both,MAX_THRESHOLD=0.75 slurm/run_verify.sh   # ~$50 in API spend
+PYTHONPATH=. python3 -m analysis.aggregate_verification
+PYTHONPATH=. <conda-python> -m analysis.make_plots         # voting figures
+PYTHONPATH=. <conda-python> -m analysis.make_corr_plots    # correlation figures
+PYTHONPATH=. <conda-python> -m analysis.make_verify_plots  # verification figures
+sbatch slurm/run_embed.sh                                  # GPU job, ~10 min for 48k samples
+PYTHONPATH=. <conda-python> -m analysis.embedding_correlation
+PYTHONPATH=. <conda-python> -m analysis.make_embed_plots
+tectonic analysis/report.tex --outdir analysis/
+\end{verbatim}
+
+\noindent See \texttt{analysis/README.md} for the chunked-mode workaround when running on a constrained environment.
+
+\end{document}
