@@ -50,7 +50,6 @@ A reported score $\mathcal{S}_b(m)$ is not an intrinsic property of the model; i
 |-----------|------:|-------:|
 | MMLU-CS | 1 | 100 |
 | CyberMetric | 1 | 10,000 |
-| SEvenLLM-Bench | 1 | 1,300 |
 | SecEval | 1 | 2,189 |
 | CTI-Bench | 5 | 4,947 |
 | AthenaBench | 6 | 8,100 |
@@ -62,7 +61,7 @@ A reported score $\mathcal{S}_b(m)$ is not an intrinsic property of the model; i
 - **CTI-Bench**: MCQ, RCM, VSP, ATE, TAA (TSV)
 - **AthenaBench**: CKT, RMS, TAA, ATE (expanded), RCM (compiled), VSP
 - **SECURE**: MAET, CWET, KCV
-- **SecEval** · **CyberMetric** · **SecBench** · **MMLU-CS** · **SEvenLLM-Bench**
+- **SecEval** · **CyberMetric** · **SecBench** · **MMLU-CS** 
 - **RedSage-Bench**: Frameworks, Generals, Skills, CLI, Kali
 
 See `unified-benchmark-pipeline/README.md` for exact `--tasks` names.
@@ -151,7 +150,6 @@ python run_inference_benchmarks.py \
 - `ckt`, `rms`, `taa`, `athena_ate`, `athena_rcm`, `athena_vsp` (AthenaBench)
 - `secure_maet`, `secure_cwet`, `secure_kcv`
 - `redsage_frameworks`, `redsage_generals`, `redsage_skills`, `redsage_cli`, `redsage_kali`
-- `sevenllm`
 - `cissp` (requires `--cissp_path /path/to/cissp.json`)
 
 **Notes**
