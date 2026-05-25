@@ -24,23 +24,23 @@ A reported score $\mathcal{S}_b(m)$ is not an intrinsic property of the model; i
 
 ### Failure Modes Identified
 
-| Failure | Description | Observed impact |
-|---------|-------------|----------------|
-| $\mathcal{F}_1(\mathcal{D})$ | Limited capability coverage | 4/9 benchmarks contain ≥97% knowledge-oriented items |
-| $\mathcal{F}_2(\mathcal{D})$ | Gold-label correctness | 23.9% confirmed label errors among manually verified flagged items |
-| $\mathcal{F}_1(\mathcal{P})$ | Format-token leakage | ~90-point gap from literal answer-template copying |
-| $\mathcal{F}_2(\mathcal{P})$ | Prompt–question conflict | Up to 33% of multi-answer items answered as single-answer |
-| $\mathcal{F}_3(\mathcal{P})$ | Template incompatibility | 48-point gap from chat-template mismatch |
-| $\mathcal{F}_1(\mathcal{I})$ | Stop-sequence mismatch | 86-point swing from one stop-sequence parameter |
-| $\mathcal{F}_2(\mathcal{I})$ | Token-budget filter | 81-point recovery after increasing token budget |
-| $\mathcal{F}_3(\mathcal{I})$ | Temperature drift | 40-point gap between documented and enacted decoding |
-| $\mathcal{F}_1(\mathcal{E})$ | Extractor divergence | ~88-point gap from regex/output mismatch |
-| $\mathcal{F}_2(\mathcal{E})$ | Denominator inflation | Up to ×500 inflation under valid-only scoring |
-| $\mathcal{F}_3(\mathcal{E})$ | Metric-direction mismatch | Up to five-rank inversion on related scoring tasks |
-| $\mathcal{F}_4(\mathcal{E})$ | Reasoning–extraction conflict | Up to 40-point prompt-mode sensitivity |
-| $\mathcal{F}_1(\mathcal{A})$ | Logprob vs. generative scoring | Up to 41-point gap on identical items |
-| $\mathcal{F}_2(\mathcal{A})$ | Task-level metric drift | Up to 70-point gap from partial-credit rules |
-| $\mathcal{F}_3(\mathcal{A})$ | Aggregation inconsistency | Up to 100-point discrepancy under mixed denominators |
+| Failure | Description | Observed impact | Mitigation |
+|---------|-------------|----------------|------------|
+| $\mathcal{F}_1(\mathcal{D})$ | Limited capability coverage | 4/9 benchmarks contain ≥97% knowledge-oriented items | Stratify scores by K/A; require minimum analytical fraction |
+| $\mathcal{F}_2(\mathcal{D})$ | Gold-label correctness | 23.9% confirmed label errors among manually verified flagged items | Search-grounded verifier on tier-1/2 whitelist |
+| $\mathcal{F}_1(\mathcal{P})$ | Format-token leakage | ~90-point gap from literal answer-template copying | Replace format placeholders with unambiguous instructions that cannot be mistaken for the answer |
+| $\mathcal{F}_2(\mathcal{P})$ | Prompt–question conflict | Up to 33% of multi-answer items answered as single-answer | Audit item wording for consistency with benchmark-level instruction; flag items whose phrasing implies fewer answers than the gold label |
+| $\mathcal{F}_3(\mathcal{P})$ | Template incompatibility | 48-point gap from chat-template mismatch | Apply model-native chat template; ablate temperature and format compliance separately |
+| $\mathcal{F}_1(\mathcal{I})$ | Stop-sequence mismatch | 86-point swing from one stop-sequence parameter | Apply stop sequences post-generation after extracting from `</think>`; specify stop-sequence behaviour separately per reasoning architecture |
+| $\mathcal{F}_2(\mathcal{I})$ | Token-budget filter | 81-point recovery after increasing token budget | Set `max_tokens` ≥ 16; validate against all target API backends before release |
+| $\mathcal{F}_3(\mathcal{I})$ | Temperature drift | 40-point gap between documented and enacted decoding | Reproduce paper-prescribed temperature; pin decoding config in the evaluation script |
+| $\mathcal{F}_1(\mathcal{E})$ | Extractor divergence | ~88-point gap from regex/output mismatch | Designate a single canonical extractor; link it prominently to discourage reimplementations; require evaluator details in any paper reporting scores |
+| $\mathcal{F}_2(\mathcal{E})$ | Denominator inflation | Up to ×500 inflation under valid-only scoring | Report both correct/valid and correct/total; flag models with invalid rate above a documented threshold |
+| $\mathcal{F}_3(\mathcal{E})$ | Metric-direction mismatch | Up to five-rank inversion on related scoring tasks | Standardise on $1{-}\text{MAD}/R$ and document $R$ explicitly; or always report raw MAD with stated direction |
+| $\mathcal{F}_4(\mathcal{E})$ | Reasoning–extraction conflict | Up to 40-point prompt-mode sensitivity | Use LLM judge or full-body extraction; release reference extractor alongside metric definition |
+| $\mathcal{F}_1(\mathcal{A})$ | Logprob vs. generative scoring | Up to 41-point gap on identical items | Use logprob scoring for MCQ; document scoring method; do not mix scoring modes across models |
+| $\mathcal{F}_2(\mathcal{A})$ | Task-level metric drift | Up to 70-point gap from partial-credit rules | Report both Correct and Plausible Accuracy; or pin single definition with documented alias-graph handling |
+| $\mathcal{F}_3(\mathcal{A})$ | Aggregation inconsistency | Up to 100-point discrepancy under mixed denominators | Define accuracy = correct/total throughout; report invalid rate and judge-agreement separately |
 
 ## Evaluated Benchmarks
 
