@@ -62,8 +62,8 @@ The eight benchmark families were selected to satisfy three criteria jointly:
 | AthenaBench | CKT, ATE, RCM, RMS, VSP, TAA | 8,100 | Cyber Threat Intelligence | MCQ + SAQ |
 | SECURE | MAET, CWET, KCV | 4,066 | ICS / OT Security | MCQ |
 | SecEval | — | 2,189 | Broad cybersecurity (9 domains) | MCQ |
-| CyberMetric | — | 500 | Broad cybersecurity (9 domains) | MCQ |
-| SecBench | English MCQ | 2,730 | Multi-dimensional cybersecurity | MCQ |
+| CyberMetric | — | 10,000 | Broad cybersecurity (9 domains) | MCQ |
+| SecBench | English MCQ | 47,910 | Multi-dimensional cybersecurity | MCQ |
 | MMLU-CS | computer_security | 100 | General computer security | MCQ |
 | RedSage-Bench | Frameworks, Generals, Skills, CLI, Kali | 30,280 | Tool & framework proficiency | MCQ |
 
