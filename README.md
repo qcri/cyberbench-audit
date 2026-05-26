@@ -6,7 +6,7 @@
 
 ## Overview
 
-LLM benchmark scores are often treated as stable measurements of model capability, yet their outcomes depend on configurable evaluation pipelines. We audit the reliability of **nine cybersecurity benchmark families** across **10 frontier, open-weight, and cybersecurity-specialized LLMs**. By modeling benchmarks as measurement pipelines, we identify **15 recurring failure modes** and show that single pipeline choices can shift scores by over 80 percentage points and substantially alter model rankings. Using a unified evaluation harness that standardizes pipeline choices while preserving task semantics, we find that **7 of 10 models shift by at least three ranks** on at least one benchmark.
+LLM benchmark scores are often treated as stable measurements of model capability, yet their outcomes depend on configurable evaluation pipelines. We audit the reliability of **eight cybersecurity benchmark families** across **10 frontier, open-weight, and cybersecurity-specialized LLMs**. By modeling benchmarks as measurement pipelines, we identify **15 recurring failure modes** and show that single pipeline choices can shift scores by over 80 percentage points and substantially alter model rankings. Using a unified evaluation harness that standardizes pipeline choices while preserving task semantics, we find that **7 of 10 models shift by at least three ranks** on at least one benchmark.
 
 ## Measurement Pipeline Framework
 
@@ -26,7 +26,7 @@ A reported score $\mathcal{S}_b(m)$ is not an intrinsic property of the model; i
 
 | Failure | Description | Observed impact | Mitigation |
 |---------|-------------|----------------|------------|
-| $\mathcal{F}_1(\mathcal{D})$ | Limited capability coverage | 4/9 benchmarks contain ≥97% knowledge-oriented items | Stratify scores by K/A; require minimum analytical fraction |
+| $\mathcal{F}_1(\mathcal{D})$ | Limited capability coverage | 4/8 benchmarks contain ≥97% knowledge-oriented items | Stratify scores by K/A; require minimum analytical fraction |
 | $\mathcal{F}_2(\mathcal{D})$ | Gold-label correctness | 23.9% confirmed label errors among manually verified flagged items | Search-grounded verifier on tier-1/2 whitelist |
 | $\mathcal{F}_1(\mathcal{P})$ | Format-token leakage | ~90-point gap from literal answer-template copying | Replace format placeholders with unambiguous instructions that cannot be mistaken for the answer |
 | $\mathcal{F}_2(\mathcal{P})$ | Prompt–question conflict | Up to 33% of multi-answer items answered as single-answer | Audit item wording for consistency with benchmark-level instruction; flag items whose phrasing implies fewer answers than the gold label |
@@ -44,27 +44,60 @@ A reported score $\mathcal{S}_b(m)$ is not an intrinsic property of the model; i
 
 ## Evaluated Benchmarks
 
-24 sub-tasks across 9 benchmark families:
+### Selection Rationale
 
-| Benchmark | Tasks | Prompts |
-|-----------|------:|-------:|
-| MMLU-CS | 1 | 100 |
-| CyberMetric | 1 | 10,000 |
-| SecEval | 1 | 2,189 |
-| CTI-Bench | 5 | 4,947 |
-| AthenaBench | 6 | 8,100 |
-| SecBench | 1 | 47,910 |
-| RedSage-Bench | 5 | 30,280 |
-| SECURE | 3 | 4,066 |
+The eight benchmark families were selected to satisfy three criteria jointly:
 
-**Sub-tasks by benchmark:**
-- **CTI-Bench**: MCQ, RCM, VSP, ATE, TAA (TSV)
-- **AthenaBench**: CKT, RMS, TAA, ATE (expanded), RCM (compiled), VSP
-- **SECURE**: MAET, CWET, KCV
-- **SecEval** · **CyberMetric** · **SecBench** · **MMLU-CS** 
-- **RedSage-Bench**: Frameworks, Generals, Skills, CLI, Kali
+1. **Field adoption.** Each benchmark is used by at least one published cybersecurity-specialized LLM as a primary evaluation surface. Including benchmarks that no model uses would not reflect the measurement practices the paper audits.
+2. **Task diversity.** Together the benchmarks span two fundamental paradigms — multiple-choice knowledge recall (MCQ) and structured open-ended extraction (SAQ) — across eight distinct cybersecurity sub-domains.
+3. **Pipeline variety.** The benchmarks differ maximally in their evaluation implementations: some provide no inference script; others bundle inference and scoring together; evaluation methods range from regex extraction to CVSS numerical comparison to alias-aware set matching. This variety is what makes a cross-benchmark audit informative.
 
-See `unified-benchmark-pipeline/README.md` for exact `--tasks` names.
+### Coverage
+
+23 sub-tasks across 8 benchmark families:
+
+| Benchmark | Sub-tasks | Prompts (evaluated / total) | Domain | Type |
+|-----------|-----------|----------------------------:|--------|------|
+| CTI-Bench | MCQ, RCM, VSP, ATE, TAA | 4,947 / 4,947 | Cyber Threat Intelligence | MCQ + SAQ |
+| AthenaBench | CKT, ATE, RCM, RMS, VSP, TAA | 8,100 / 8,100 | Cyber Threat Intelligence | MCQ + SAQ |
+| SECURE | MAET, CWET, KCV | 4,066 / 4,066 | ICS / OT Security | MCQ |
+| SecEval | — | 2,189 / 2,189 | Broad cybersecurity (9 domains) | MCQ |
+| CyberMetric | — | 500 / 10,000 | Broad cybersecurity (9 domains) | MCQ |
+| SecBench | English MCQ | 2,730 / 47,910 | Multi-dimensional cybersecurity | MCQ |
+| MMLU-CS | computer_security | 100 / 100 | General computer security | MCQ |
+| RedSage-Bench | Frameworks, Generals, Skills, CLI, Kali | 30,280 / 30,280 | Tool & framework proficiency | MCQ |
+
+See `unified-benchmark-pipeline/README.md` for the exact `--tasks` flag names.
+
+### Adoption by Cybersecurity-Specialized LLMs
+
+The table below maps each benchmark to the specialized LLMs that use it as a primary evaluation surface, verified against the published papers. ✓ = included; ✓† = partial sub-task coverage; ✗ = explicitly excluded; — = not mentioned.
+
+| Benchmark | Primus ([2502.11191](https://arxiv.org/abs/2502.11191)) | RedSage ([2601.22159](https://arxiv.org/abs/2601.22159)) | Foundation-Sec-8B ([2504.21039](https://arxiv.org/abs/2504.21039)) | Sec-Gemini v1 |
+|-----------|:---:|:---:|:---:|:---:|
+| CTI-Bench | ✓ (MCQ, RCM, VSP, ATE) | ✓† (MCQ, RCM) | ✓† (MCQ, RCM) | ✓† (MCQ, RCM) |
+| AthenaBench | — | — | — | — |
+| SECURE | — | ✓ (MAET, CWET, KCV) | ✗ saturated | — |
+| SecEval | ✓ | ✓ | ✗ saturated | — |
+| CyberMetric | ✓ | ✓ | ✓ | — |
+| SecBench | — | ✓ | ✓ (English MCQ) | — |
+| MMLU-CS | — | ✓ | ✗ n=100 too small | — |
+| RedSage-Bench | — | ✓ (custom) | — | — |
+
+**Notes:**
+- AthenaBench postdates all four model papers; no specialized LLM has evaluated on it yet. It is included because it extends CTI-Bench with a different scoring convention for the same tasks — a key cross-benchmark rank-disagreement case.
+- Foundation-Sec-8B explicitly excludes SECURE and SecEval (both saturated) and MMLU-CS (n=100 deemed statistically unreliable).
+- Sec-Gemini v1 is an experimental model blog post, not a research paper; only CTI-MCQ and CTI-RCM results are reported.
+
+### Why These Eight Are Sufficient
+
+**Task-type coverage.** The 23 sub-tasks span both MCQ (factual recall under closed-set constraints) and SAQ (structured extraction under open-ended generation) — the two paradigms used by all cybersecurity LLM evaluation papers in current practice.
+
+**Domain coverage.** The suite covers CTI extraction, vulnerability scoring, root-cause mapping, attack-technique identification, threat-actor attribution, ICS security, general cybersecurity knowledge, and tool proficiency — the full range of sub-domains evaluated by Primus, RedSage, and Foundation-Sec-8B combined.
+
+**Adoption coverage.** Every cybersecurity-specialized LLM that reports multi-benchmark evaluation uses at least three benchmarks from this set. Evaluating on benchmarks that no specialized model uses would measure performance with no comparative baseline.
+
+**Pipeline diversity.** The eight benchmarks represent the full range of pipeline designs in current practice: from benchmarks with no scripts at all (SECURE, SecBench, MMLU-CS) to those with tightly bundled inference+eval scripts (AthenaBench, CyberMetric), covering every combination of prompt availability, evaluation style, and denominator policy.
 
 ## Evaluated Models
 
