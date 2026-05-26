@@ -116,6 +116,10 @@ The table below maps each benchmark to the specialized LLMs that use it as a pri
 | Foundation-Sec-8B | Cybersecurity-specialized |
 | RedSage-Qwen3-8B-DPO | Cybersecurity-specialized |
 
+## Hardware
+
+All open-weight and cybersecurity-specialized models are evaluated on a single server node equipped with one **NVIDIA H200 SXM 141 GB GPU**. Models are served via vLLM. Proprietary models (GPT-5.4, Claude Sonnet 4.6) are accessed via their respective APIs and require no local GPU.
+
 ## Installation
 
 ### Containerized (Docker) Setup
