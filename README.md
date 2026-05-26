@@ -56,16 +56,16 @@ The eight benchmark families were selected to satisfy three criteria jointly:
 
 23 sub-tasks across 8 benchmark families:
 
-| Benchmark | Sub-tasks | Prompts (evaluated / total) | Domain | Type |
-|-----------|-----------|----------------------------:|--------|------|
-| CTI-Bench | MCQ, RCM, VSP, ATE, TAA | 4,947 / 4,947 | Cyber Threat Intelligence | MCQ + SAQ |
-| AthenaBench | CKT, ATE, RCM, RMS, VSP, TAA | 8,100 / 8,100 | Cyber Threat Intelligence | MCQ + SAQ |
-| SECURE | MAET, CWET, KCV | 4,066 / 4,066 | ICS / OT Security | MCQ |
-| SecEval | — | 2,189 / 2,189 | Broad cybersecurity (9 domains) | MCQ |
-| CyberMetric | — | 500 / 10,000 | Broad cybersecurity (9 domains) | MCQ |
-| SecBench | English MCQ | 2,730 / 47,910 | Multi-dimensional cybersecurity | MCQ |
-| MMLU-CS | computer_security | 100 / 100 | General computer security | MCQ |
-| RedSage-Bench | Frameworks, Generals, Skills, CLI, Kali | 30,280 / 30,280 | Tool & framework proficiency | MCQ |
+| Benchmark | Sub-tasks | Prompts | Domain | Type |
+|-----------|-----------|--------:|--------|------|
+| CTI-Bench | MCQ, RCM, VSP, ATE, TAA | 4,947 | Cyber Threat Intelligence | MCQ + SAQ |
+| AthenaBench | CKT, ATE, RCM, RMS, VSP, TAA | 8,100 | Cyber Threat Intelligence | MCQ + SAQ |
+| SECURE | MAET, CWET, KCV | 4,066 | ICS / OT Security | MCQ |
+| SecEval | — | 2,189 | Broad cybersecurity (9 domains) | MCQ |
+| CyberMetric | — | 500 | Broad cybersecurity (9 domains) | MCQ |
+| SecBench | English MCQ | 2,730 | Multi-dimensional cybersecurity | MCQ |
+| MMLU-CS | computer_security | 100 | General computer security | MCQ |
+| RedSage-Bench | Frameworks, Generals, Skills, CLI, Kali | 30,280 | Tool & framework proficiency | MCQ |
 
 See `unified-benchmark-pipeline/README.md` for the exact `--tasks` flag names.
 
