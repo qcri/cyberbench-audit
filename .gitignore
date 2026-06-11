@@ -43,6 +43,8 @@ env/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
+# ...but the analysis walkthrough notebooks are a tracked deliverable
+!unified-benchmark-pipeline/notebooks/*.ipynb
 
 # Output directories
 outputs/

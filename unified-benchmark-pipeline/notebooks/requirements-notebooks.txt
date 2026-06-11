@@ -1,0 +1,9 @@
+# Notebook walkthrough deps (in addition to the analysis pipeline's own deps:
+# pandas, numpy, scipy, scikit-learn, matplotlib, and — for heavy/REGEN steps —
+# sentence-transformers, cvss, the Azure judge client).
+jupyterlab>=4.0
+notebook>=7.0
+nbconvert>=7.0
+ipykernel>=6.0
+matplotlib>=3.7
+pandas>=2.0
