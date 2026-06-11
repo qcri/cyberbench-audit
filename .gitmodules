@@ -1,3 +1,6 @@
 [submodule "external/RedSage"]
 	path = external/RedSage
 	url = https://github.com/RISys-Lab/RedSage.git
+[submodule "sayf-eval"]
+	path = sayf-eval
+	url = git@github.com:qcri/sayf-eval.git
