@@ -181,7 +181,7 @@ See [unified-benchmark-pipeline/README.md](unified-benchmark-pipeline/README.md)
 
 ```bash
 # Clone with submodules
-git clone --recurse-submodules https://github.com/qcri/BenchmarkingSecBenchmarks.git
+git clone --recurse-submodules https://github.com/qcri/cyberbench-audit.git
 
 # Or initialize after a plain clone
 git submodule update --init --recursive
