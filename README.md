@@ -101,7 +101,7 @@ See [unified-benchmark-pipeline/README.md](unified-benchmark-pipeline/README.md)
 ## Repository Structure
 
 ```
-BenchmarkingSecBenchmarks/
+cyberbench-audit/
 ├── unified-benchmark-pipeline/     # Standardized harness (inference → judge → analysis)
 │   ├── run_inference_benchmarks.py
 │   ├── run_evaluate_llm_judge.py
@@ -212,8 +212,8 @@ Shared evaluation utilities used by the unified pipeline's analysis modules.
 - Azure OpenAI or Anthropic API key (for proprietary models and the LLM judge)
 
 ```bash
-git clone --recurse-submodules https://github.com/qcri/BenchmarkingSecBenchmarks.git
-cd BenchmarkingSecBenchmarks
+git clone --recurse-submodules https://github.com/qcri/cyberbench-audit.git
+cd cyberbench-audit
 
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
