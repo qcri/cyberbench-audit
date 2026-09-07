@@ -365,7 +365,7 @@ for (m, t), note in ARTIFACTS.items():
 art_df = pd.DataFrame(art_rows)
 print(art_df.to_string(index=False))\
 """),
-    md("### LaTeX results table — `gen_table.py`\nThe `tab:main_results` block used in the paper. Note: `gen_table.py` reads all 12 entries in `outputs_final/` (including Fanar and Qwen3-30B) as written by the paper authors; the caption reflects the full 12-model run used in the paper."),
+    md("### LaTeX results table — `gen_table.py`\nThe `tab:main_results` block used in the paper. Note: `gen_table.py` reads all 12 entries in `outputs_final/` as written by the paper authors; the caption reflects the full 12-model run used in the paper."),
     code("""\
 import subprocess, sys
 result = subprocess.run(
@@ -576,7 +576,7 @@ SCORES_FILE = OUTPUTS_DIR / 'sensitivity_eval' / 'scores.json'
 with open(SCORES_FILE) as f:
     raw = json.load(f)
 
-# Only the 10 paper models — fanar2_27b is in the data but not in the paper
+# Only the 10 paper models 
 MODEL_LABELS = {
     'claude_sonnet_4_6':   'Claude Sonnet 4.6',
     'gpt_5_4':             'GPT-5.4',
@@ -591,7 +591,7 @@ MODEL_LABELS = {
 }
 records = []
 for model, tasks in raw.items():
-    if model not in MODEL_LABELS: continue  # skip Fanar and any non-paper models
+    if model not in MODEL_LABELS: continue 
     if not isinstance(tasks, dict): continue
     for task, modes in tasks.items():
         if not isinstance(modes, dict): continue
@@ -928,7 +928,7 @@ for d in sorted(OUTPUTS_DIR.iterdir()):
         continue
     model_dir = name.replace('redsage_lighteval_', '').replace('_full', '')
     if model_dir not in PAPER_DIR_NAMES:
-        continue  # skip Fanar and Qwen3-30B
+        continue  
     # Use the paper display name
     label = next((k for k, v in PAPER_MODELS.items() if v == model_dir), model_dir)
     lp  = extract_lighteval_scores(d)

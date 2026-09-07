@@ -64,7 +64,6 @@ def regenerate_summary(detailed_dir: str):
 
 models = [
     'GPT-5.4',
-    'Fanar-2-27B-Instruct',
     'Foundation-Sec-8B-Instruct',
     'Gemma-4-31B-it',
     'GPT-oss-20B',

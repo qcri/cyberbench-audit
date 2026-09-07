@@ -44,7 +44,6 @@ echo ""
 
 # Models with complete (or near-complete) response data
 MODELS=(
-    "Fanar-2-27B-Instruct"
     "Foundation-Sec-8B-Instruct"
     "GPT-oss-20B"
     "Llama-Primus-Merged"

@@ -80,7 +80,6 @@ MODEL_DISPLAY = {
     "Llama-Primus-Merged": "Primus-Merged",
     "Gemma-4-31B-it": "Gemma-4-31B",
     "Qwen3.6-35B-A3B": "Qwen3.6-35B",
-    "Fanar-2-27B-Instruct": "Fanar-27B",
     "GPT-oss-20B": "GPT-oss-20B",
     "Foundation-Sec-8B-Instruct": "Found-Sec-8B",
     "RedSage-Qwen3-8B-DPO": "RedSage-8B",

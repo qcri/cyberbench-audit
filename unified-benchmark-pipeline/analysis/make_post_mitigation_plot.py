@@ -43,7 +43,6 @@ MODEL_DISPLAY = [
     ("RedSage-Qwen3-8B-DPO",               "RedSage-8B"),
     ("Llama-3.3-70B-Instruct",             "Llama-3.3-70B"),
     ("GPT-oss-20B",                        "GPT-oss-20B"),
-    ("Fanar-2-27B-Instruct",               "Fanar-27B"),
     ("Foundation-Sec-8B-Instruct",         "Found-Sec-8B"),
     ("Llama-Primus-Merged",                "Primus-Merged"),
 ]
@@ -84,7 +83,6 @@ LIT_MODEL_ORDER = [
     "Llama-3.3-70B-Instruct",             # Llama-3.3-70B
     "Qwen3.6-35B-A3B",                    # Qwen3.6-35B
     "Llama-Primus-Nemotron-70B-Instruct", # Primus-Nemo-70B
-    "Fanar-2-27B-Instruct",               # Fanar-2-27B
     "RedSage-Qwen3-8B-DPO",               # RedSage-8B-DPO
     "Foundation-Sec-8B-Instruct",         # FoundationSec-8B
     "GPT-oss-20B",                        # GPT-OSS-20B

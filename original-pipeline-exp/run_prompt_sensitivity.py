@@ -82,12 +82,12 @@ COT_MAX_NEW_TOKENS = 8192  # generous budget — Qwen3 CoT hits ~6000 tokens on 
 COT_TASK_MAX_NEW_TOKENS = {
     "ate":         16384,  # Llama-Primus CoT ~6700, gpt-oss max=8222
     "ckt":         16384,  # gpt-oss max=8930
-    "athena_ate":  16384,  # gpt-oss 8054, Fanar 9796
-    "rms":         16384,  # gpt-oss 8173, Fanar 8418
+    "athena_ate":  16384,  # gpt-oss 8054
+    "rms":         16384,  # gpt-oss 8173, 
     "athena_vsp":  16384,  # gpt-oss max=9455
     "redsage_cli": 16384,  # gpt-oss max=7769
-    "rcm_2021":    16384,  # Fanar max=8993
-    "seceval":     16384,  # Fanar max=8947
+    "rcm_2021":    16384,  
+    "seceval":     16384,  
 }
 
 # Original token budgets (used for zero_shot and few_shot)
@@ -473,7 +473,6 @@ def _apply_chat_template(tokenizer, msgs, enable_thinking=True):
 
     Different models use different parameters:
       - Qwen3, Gemma4: enable_thinking=True/False
-      - Fanar: no_thinking=True suppresses thinking (True = disable, inverted logic)
       - Others: no thinking parameter; falls back to plain template
 
     enable_thinking=True  → model should think (CoT mode)
@@ -484,7 +483,6 @@ def _apply_chat_template(tokenizer, msgs, enable_thinking=True):
         user = next((m["content"] for m in msgs if m["role"] == "user"), "")
         return (sys + "\n" if sys else "") + user
 
-    # Fanar uses no_thinking=True to suppress thinking (inverted from enable_thinking)
     try:
         return tokenizer.apply_chat_template(
             msgs, tokenize=False, add_generation_prompt=True,

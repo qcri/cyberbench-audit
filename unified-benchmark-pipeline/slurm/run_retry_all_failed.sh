@@ -53,7 +53,6 @@ echo "=== Phase B: judge retries (all models) ==="
 # All models with a default judge dir; we skip _v1 and _v2 by listing only
 # those without a suffix.
 MODELS=(
-    "Fanar-2-27B-Instruct"
     "Foundation-Sec-8B-Instruct"
     "Gemma-4-31B-it"
     "GPT-5.4"

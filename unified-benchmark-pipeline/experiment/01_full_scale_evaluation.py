@@ -114,12 +114,6 @@ MODELS = [
         description="Google Gemma-4 31B instruction-tuned"
     ),
     ModelConfig(
-        name="Fanar-2-27B-Instruct",
-        model_path=f"{MODELS_DIR}/Fanar-2-27B-Instruct",
-        is_base=True,
-        description="QCRI Fanar-2 multilingual 27B model"
-    ),
-    ModelConfig(
         name="GPT-oss-20B",
         model_path=f"{MODELS_DIR}/gpt-oss-20b",
         is_base=True,

@@ -138,8 +138,8 @@ python 07_generate_reports.py
 **Purpose:** Complete empirical evaluation across all models and tasks (Figure)
 
 **What it does:**
-- Collects inferences from 7 models on all 21 tasks
-- Models: Llama-3.1-8B (base), Llama-Primus-Merged, Llama-Primus-Base, Foundation-Sec-8B, RedSage-8B-Ins, RedSage-8B-DPO, Fanar-AR
+- Collects inferences from 6 models on all 21 tasks
+- Models: Llama-3.1-8B (base), Llama-Primus-Merged, Llama-Primus-Base, Foundation-Sec-8B, RedSage-8B-Ins, RedSage-8B-DPO
 - Tasks: Full datasets per task (CTI-Bench, AthenaBench, SECURE, SecBench, etc.)
 - Uses LLM judge (Llama-3.1-8B) with HuggingFace backend
 - Computes confidence intervals (95% CI)
