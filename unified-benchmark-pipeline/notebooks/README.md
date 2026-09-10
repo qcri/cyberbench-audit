@@ -8,10 +8,11 @@ A friendly, runnable tour of the paper's analysis (`../analysis/`). Each noteboo
 |---|---|
 | `00_overview.ipynb` | Framing, how-to, `reports/` inventory, run order |
 | `01_results_table.ipynb` | Master accuracy table + secondary metrics (F1, MAD) + LaTeX |
-| `02_judge_agreement.ipynb` | LLM-judge reliability (Cohen's κ across judges) |
-| `03_gold_errors_verification.ipynb` | Suspect gold labels + search-grounded verification |
+| `02_judge_agreement.ipynb` | LLM-judge reliability + independence (Cohen's κ; second-judge cross-check) |
+| `03_gold_errors_verification.ipynb` | Suspect gold labels + verification + two-annotator spot-check |
 | `04_capability_coverage.ipynb` | Knowledge-vs-Analytical coverage |
 | `05_redundancy_correlation_embeddings.ipynb` | Cross-task redundancy, effective dimensions |
+| `06_rank_shift_stability.ipynb` | Rank-shift bootstrap CIs + generation-vs-extraction decomposition |
 
 ## Run
 
@@ -32,7 +33,7 @@ jupyter lab        # open any notebook, run top-to-bottom
 ## Headless execution (CI / reproduce)
 
 ```bash
-./run_all.sh        # nbconvert --execute over all six, SAYF_NB_REGEN=0
+./run_all.sh        # regenerate from build.py + nbconvert --execute all seven in place, SAYF_NB_REGEN=0
 ```
 
 On the cluster, run it on a compute node (the login node blocks installs and
