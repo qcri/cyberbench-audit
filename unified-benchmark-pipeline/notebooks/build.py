@@ -64,10 +64,11 @@ quantifies 15 recurring failure modes across these stages.
 | Notebook | Theme | Failure modes |
 |---|---|---|
 | `01_results_table` | Master accuracy table + secondary metrics (F1, MAD) | 𝒜 aggregation |
-| `02_judge_agreement` | LLM-judge reliability (Cohen's κ across judges) | 𝓔 extraction/scoring |
-| `03_gold_errors_verification` | Suspect gold labels + search-grounded verification | 𝐹₂(𝒟) label quality |
+| `02_judge_agreement` | LLM-judge reliability + independence (Cohen's κ; second-judge cross-check) | 𝓔 extraction/scoring |
+| `03_gold_errors_verification` | Suspect gold labels + verification + two-annotator spot-check | 𝐹₂(𝒟) label quality |
 | `04_capability_coverage` | Knowledge-vs-Analytical coverage | 𝐹₁(𝒟) limited coverage |
 | `05_redundancy_correlation_embeddings` | Cross-task redundancy, effective dimensions | benchmark redundancy |
+| `06_rank_shift_stability` | Rank-shift bootstrap CIs + generation-vs-extraction decomposition | ranking stability |
 """),
     setup_cell(),
     md("### What's already computed (`reports/` inventory)"),
@@ -134,6 +135,50 @@ show_df("judge_agreement/per_cell_default_vs_v1.csv")\
     code('show_md("judge_agreement/summary.md")'),
     code('show_fig("agent_agreement.png")'),
     md("_Supports the judge-reliability discussion ($\\\\mathcal{F}(\\\\mathcal{E})$)._"),
+    md("""\
+### Judge independence — a second, different-family judge
+
+The pinned judge (GPT-5.4) is also one of the ten evaluated models, so its
+verdicts could in principle favor its own family. We re-graded every stored
+output with an independent judge (Claude Sonnet 4.6) and compared verdicts, and
+additionally stressed the judge on the two strata where it can fail: calls it
+returned `NONE`, and MCQ-family calls where its verdict differs from a
+deterministic regex (`analysis.judge_adversarial`).
+"""),
+    code("""\
+import json, pandas as pd
+from IPython.display import display
+s = json.loads((REPORTS_DIR / "judge_adversarial/summary.json").read_text())
+m = s["machine_second_rater_gpt_vs_claude"]
+display(pd.DataFrame([
+    {"stratum": k, "n": v["n"], "agreement_%": v["agreement_pct"], "cohens_kappa": v["cohens_kappa"]}
+    for k, v in m.items()
+]))
+print("adversarial strata sizes:", s["strata_sizes"])\
+"""),
+    md("""\
+The two independent judges agree **99.6%** on the full set (κ≈0.99) and ~98% even
+on the adversarial strata; GPT-5.4 gains only +0.22 pp from its own-family judge,
+and the leaderboard is unchanged (Spearman ρ≈0.98). Two human annotators then
+adjudicated a 120-item adversarial sample.
+"""),
+    code("""\
+import pandas as pd
+adv = pd.read_csv(REPORTS_DIR / "judge_adversarial/adversarial_sheet.csv")
+print("adversarial items:", len(adv), " strata:", adv["stratum"].value_counts().to_dict())
+if {"annotator_A", "annotator_B"}.issubset(adv.columns):
+    both = adv[(adv["annotator_A"].astype(str).str.strip() != "") &
+               (adv["annotator_B"].astype(str).str.strip() != "")]
+    if len(both):
+        print(f"human-annotated: {len(both)}/{len(adv)}  raw agreement: "
+              f"{(both['annotator_A'] == both['annotator_B']).mean():.3f}")
+    adj = adv.get("adjudicated")
+    if adj is not None:
+        adj = adj.astype(str).str.strip(); adj = adj[adj != ""]
+        if len(adj):
+            print(f"adjudicated judge accuracy: {(adj == 'judge_correct').sum()}/{len(adj)}")\
+"""),
+    md("_Judge-independence and adversarial-reliability evidence (paper App.~B.5)._"),
 ]
 
 # ──────────────────── 03 — gold errors + verification ────────────────────
@@ -182,6 +227,36 @@ show_df("label_quality_impact/delta_table.csv")
 show_md("label_quality_impact/ranking_diff.md")\
 """),
     md("_Confirmed-label-error rate and the post-mitigation rank changes are the $\\\\mathcal{F}_2(\\\\mathcal{D})$ evidence._"),
+    md("""\
+### Human two-annotator label spot-check
+
+To calibrate the automated verifier we drew a 50-item sample and had two
+annotators independently judge whether they *agree* with each verifier verdict
+(Cohen's κ + the adjudicated confirmation rate). This is the human validation the
+label audit reports.
+"""),
+    code("""\
+import pandas as pd
+sp = pd.read_csv(REPORTS_DIR / "label_spotcheck/spotcheck.csv")
+print("items:", len(sp), " verifier verdicts:", sp["verifier_verdict"].value_counts().to_dict())
+if {"annotator_A", "annotator_B"}.issubset(sp.columns):
+    both = sp[(sp["annotator_A"].astype(str).str.strip() != "") &
+              (sp["annotator_B"].astype(str).str.strip() != "")]
+    if len(both):
+        print(f"human-annotated: {len(both)}/{len(sp)}  raw agreement: "
+              f"{(both['annotator_A'] == both['annotator_B']).mean():.3f}")
+    adj = sp.get("adjudicated")
+    if adj is not None:
+        adj = adj.astype(str).str.strip(); adj = adj[adj != ""]
+        if len(adj):
+            print("adjudicated:", adj.value_counts().to_dict())\
+"""),
+    md("""\
+Two annotators confirm the verifier on **46 of 50** verdicts (Cohen's κ≈0.68); the
+four exceptions are two identified verifier errors and two items unverifiable from
+the cited sources — the grounded-search verifier is right on the large majority of
+the sample without being infallible.
+"""),
 ]
 
 # ───────────────────── 04 — capability coverage (K/A) ─────────────────────
@@ -269,6 +344,68 @@ show_fig("semantic_vs_accuracy_scatter.png")\
     md("_The effective-dimension and semantic-overlap evidence for benchmark redundancy._"),
 ]
 
+# ─────────────── 06 — rank-shift stability & decomposition ────────────────
+NB06 = [
+    md("""\
+# 06 · Rank-shift stability & decomposition
+
+Standardizing the pipeline reorders the leaderboard (paper Table 5). Two
+questions follow: **(1)** are the shifts real or sampling noise? — an item-level
+**bootstrap**; and **(2)** is the shift driven by the LLM judge or by the other
+standardizations? — a **generation-vs-extraction decomposition**. Both re-score
+stored outputs; no new generation.
+"""),
+    setup_cell(),
+    md("""\
+### Item-level bootstrap CIs — `analysis.bootstrap_ci`  *(heavy · re-scores stored per-item outputs)*
+Rendered from cached `bootstrap_ci.json`. `SAYF_NB_REGEN=1` recomputes (5,000
+paired resamples of the stored per-item scores). ρ_b is Spearman's ρ between the
+original and standardized per-benchmark rankings.
+"""),
+    code("""\
+if heavy("bootstrap_ci"):
+    import importlib; importlib.import_module("analysis.bootstrap_ci")
+import json, pandas as pd
+from IPython.display import display
+b = json.loads((REPORTS_DIR / "bootstrap_ci.json").read_text())
+rows = []
+for name, e in b["benchmarks"].items():
+    lo, hi = e["rho_ci"]
+    rows.append({"benchmark": name, "rho_b": round(e["rho_point"], 2),
+                 "ci_low": round(lo, 2), "ci_high": round(hi, 2)})
+display(pd.DataFrame(rows))
+print(f"{b['B']} resamples; every interval excludes 1, only SecEval includes 0")\
+"""),
+    md("""\
+### Generation vs. extraction — `analysis.decomp_full`  *(heavy · reads original + standardized generations)*
+Rendered from cached `decomp_full.json`. **GEN** = ρ(regex@original → regex@standardized)
+(generation change, extractor held at regex); **EXT** = ρ(regex@standardized →
+judge@standardized) (extractor swap, generation fixed). Lower ρ = more reordering;
+the ρ(A',A) column checks the regex reproduces the published *before* ranking.
+"""),
+    code("""\
+if heavy("decomp_full"):
+    import importlib; importlib.import_module("analysis.decomp_full")
+import json, pandas as pd
+from IPython.display import display
+d = json.loads((REPORTS_DIR / "decomp_full.json").read_text())
+rows = []
+for name, e in d["benchmarks"].items():
+    rows.append({"benchmark": name,
+                 "GEN rho(A'->B')": e["GEN_rho_Ap_Bp"],
+                 "EXT rho(B'->C)": e["EXT_rho_Bp_C"],
+                 "check rho(A',A)": e["rho_Ap_A_regex_reproduces_before"]})
+display(pd.DataFrame(rows))\
+"""),
+    md("""\
+The extraction (judge) swap co-drives the shift only on **MMLU-CS** (EXT ρ≈0.20)
+and mildly SECURE; on AthenaBench, CTI-Bench and SecBench the judge barely reorders
+(EXT ρ 0.99 / 0.89 / 0.61) and the **generation** change dominates. So Table 5 is
+not an artifact of "replacing regexes with a judge" (paper App.~L.4/L.5; the two
+attacker-attribution tasks are excluded — a regex cannot do alias matching).
+"""),
+]
+
 NOTEBOOKS = {
     "00_overview.ipynb": NB00,
     "01_results_table.ipynb": NB01,
@@ -276,6 +413,7 @@ NOTEBOOKS = {
     "03_gold_errors_verification.ipynb": NB03,
     "04_capability_coverage.ipynb": NB04,
     "05_redundancy_correlation_embeddings.ipynb": NB05,
+    "06_rank_shift_stability.ipynb": NB06,
 }
 
 KERNEL_META = {
