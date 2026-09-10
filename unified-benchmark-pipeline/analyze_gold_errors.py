@@ -26,7 +26,6 @@ MODELS = [
     "RedSage-Qwen3-8B-DPO",
     "Qwen3.6-35B-A3B",
     "GPT-oss-20B",
-    "Fanar-2-27B-Instruct",
 ]
 
 # ── Thresholds (fraction of models that must agree) ───────────────────────────

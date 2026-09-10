@@ -100,12 +100,6 @@ MODELS = [
         is_base=True,
         description="RISys-Lab RedSage model (DPO-aligned)"
     ),
-    ModelConfig(
-        name="Fanar-1-9B-Instruct",
-        model_path="QCRI/Fanar-1-9B-Instruct",
-        is_base=True,
-        description="Arabic-capable model for multilingual evaluation"
-    ),
 ]
 
 # Task configurations - 21 tasks across 9 benchmark families

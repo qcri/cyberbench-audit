@@ -71,10 +71,6 @@ if should_download "gemma"; then
     download_model "google/gemma-4-31B"             "gemma-4-31B"
 fi
 
-if should_download "fanar"; then
-    download_model "QCRI/Fanar-2-27B-Instruct"      "Fanar-2-27B-Instruct"
-fi
-
 if should_download "gpt-oss" || should_download "gptoss"; then
     download_model "openai/gpt-oss-20b"             "gpt-oss-20b"
 fi

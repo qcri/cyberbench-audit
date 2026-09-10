@@ -19,7 +19,7 @@ Re-runnable analysis on top of `outputs/`:
 ## Run
 
 ```bash
-cd BenchmarkingSecBenchmarks
+cd cyberbench-audit
 PYTHONPATH=. python3 -m analysis.judge_agreement
 PYTHONPATH=. python3 -m analysis.results_table
 PYTHONPATH=. python3 -m analysis.gold_error_voting           # full run

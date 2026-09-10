@@ -45,6 +45,7 @@ env/
 *.ipynb
 # ...but the analysis walkthrough notebooks are a tracked deliverable
 !unified-benchmark-pipeline/notebooks/*.ipynb
+!original-pipeline-exp/notebooks/*.ipynb
 
 # Output directories
 outputs/

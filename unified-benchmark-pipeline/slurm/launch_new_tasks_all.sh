@@ -14,7 +14,6 @@ SCRIPT="$ROOT_DIR/slurm/run_inference_new_tasks.sh"
 # (MODEL_NAME, primary path, HF fallback)
 # Lines starting with # are skipped.
 MODELS=(
-    "Fanar-2-27B-Instruct|$MODELS_DIR/Fanar-2-27B-Instruct|QCRI/Fanar-2-27B-Instruct"
     "Foundation-Sec-8B-Instruct|$MODELS_DIR/Foundation-Sec-8B-Instruct|fdtn-ai/Foundation-Sec-8B-Instruct"
     "Gemma-4-31B-it|/export/cyb-ai-research-data/cshalby/models/gemma-4-31B-it|google/gemma-4-31B"
     "GPT-oss-20B|$MODELS_DIR/gpt-oss-20b|openai/gpt-oss-20b"
